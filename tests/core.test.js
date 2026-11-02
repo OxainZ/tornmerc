@@ -79,30 +79,25 @@ test('bountyWatches stacks every bounty on a target and filters by me, level, re
 	assert.equal(Merc.bountyWatches([b(7, 5, 1, 1, 2)], { maxFf: 3, stats: new Map() }).length, 1, 'unknown FF is kept until stats arrive');
 });
 
-test('bountyScore: soonest hit for the most cash', () => {
-	const row = (state, total, ff, until) => ({ state, bounty: { total }, ff, until });
-	assert.equal(Merc.bountyScore(row('hit', 100000, 1.2), NOW, 3), 100000);
-	assert.equal(Merc.bountyScore(row('hit', 100000, 3, 0), NOW, 3), 50000);
-	assert.equal(Merc.bountyScore(row('hit', 100000, 0), NOW, 3), 100000);
-	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW), NOW, 3), 100000);
-	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 600), NOW, 3), 50000);
-	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 2400), NOW, 3), 20000);
-	assert.equal(Merc.bountyScore(row('no', 100000, 1), NOW, 3), 0);
-	assert.equal(Merc.bountyScore({ state: 'hit' }, NOW, 3), 0);
-	// $300k out in 14 min beats $2m out in 20 min? No: 300k/2.4 = 125k vs 2m/3 = 667k. The big one wins.
-	assert.ok(Merc.bountyScore(row('soon', 2e6, 1, NOW + 1200), NOW, 3) > Merc.bountyScore(row('soon', 3e5, 1, NOW + 840), NOW, 3));
-	// but $300k out NOW beats $2m 2 hours away (2m/13 = 154k).
-	assert.ok(Merc.bountyScore(row('hit', 3e5, 1), NOW, 3) > Merc.bountyScore(row('soon', 2e6, 1, NOW + 7200), NOW, 3));
+test('bountyKey: out now first, then by the minute of release', () => {
+	const row = (state, total, until) => ({ state, bounty: { total }, until });
+	assert.deepEqual(Merc.bountyKey(row('hit', 100000), NOW), { bucket: 0, cash: 100000 });
+	assert.deepEqual(Merc.bountyKey(row('soon', 100000, NOW + 30), NOW), { bucket: 1, cash: 100000 });
+	assert.deepEqual(Merc.bountyKey(row('soon', 100000, NOW + 600), NOW), { bucket: 11, cash: 100000 });
+	assert.equal(Merc.bountyKey(row('no', 100000), NOW), null);
+	assert.equal(Merc.bountyKey({ state: 'hit' }, NOW), null);
 });
 
-test('rankBounties puts the best money first and drops the dead', () => {
+test('rankBounties: soonest out wins, cash breaks the tie, out-now on top', () => {
 	const rows = Merc.rankBounties([
-		{ key: 'a', state: 'soon', bounty: { total: 1e6 }, until: NOW + 7200 },   // 1m / 13 = 77k
-		{ key: 'b', state: 'hit', bounty: { total: 200000 } },
-		{ key: 'c', state: 'no', bounty: { total: 9e9 } },
-	], NOW, 0);
-	assert.deepEqual(rows.map((r) => r.key), ['b', 'a']);
-	assert.equal(rows[0].score, 200000);
+		{ key: 'mark', state: 'soon', bounty: { total: 2e6 }, until: NOW + 600, level: 43 },
+		{ key: 'small', state: 'soon', bounty: { total: 50000 }, until: NOW + 120, level: 9 },
+		{ key: 'now', state: 'hit', bounty: { total: 10000 }, level: 5 },
+		{ key: 'now2', state: 'hit', bounty: { total: 300000 }, level: 30 },
+		{ key: 'same', state: 'soon', bounty: { total: 90000 }, until: NOW + 125, level: 20 },
+		{ key: 'dead', state: 'no', bounty: { total: 9e9 } },
+	], NOW);
+	assert.deepEqual(rows.map((r) => r.key), ['now2', 'now', 'same', 'small', 'mark']);
 });
 
 test('pruneSkip forgets collected bounties after the window', () => {

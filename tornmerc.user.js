@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Merc Radar
-// @version      0.5.2
+// @version      0.6.0
 // @description  Free merc radar: watches your contracts, Torn's bounty board and paid-hit factions through the Torn API and alerts you the moment a target can be hit. Fair Fight on every target (FFScouter), chain kit, attack-page contract check, hit log. Alerts only; every attack stays manual.
 // @author       Oxain
 // @match        https://www.torn.com/*
@@ -22,7 +22,7 @@
 	/* ---------- pure core (exported for Node, no DOM) ---------- */
 
 	const Merc = {};
-	Merc.VERSION = '0.5.2';
+	Merc.VERSION = '0.6.0';
 	Merc.API = 'https://api.torn.com/v2';
 	Merc.FF_API = 'https://ffscouter.com/api/v1';
 	Merc.COMMENT = 'TornMerc';
@@ -173,22 +173,17 @@
 	};
 
 	/**
-	 * What a bounty row is worth to ME right now: the soonest hit for the most cash.
-	 * Out and hittable = full value. In hospital = value x 1/(1 + wait/10min): half at 10 min, a fifth at 40,
-	 * because every merc on the board is racing for that release and a long wait is a long shot.
-	 * FF ease: 1.0 at FF<=2, down to 0.5 at my limit. Returns 0 for anything I cannot or should not hit.
+	 * Bounty order: OUT NOW first (most cash first), then whoever is out soonest.
+	 * Inside the same minute of release, more cash wins; so two targets out at 9:40 and 10:10 are a coin
+	 * flip on the clock and the bigger bounty is listed first. Above my FF limit = not listed at all.
+	 * Returns {bucket, cash}: bucket 0 = out now, else the minute of release; sort ascending bucket, descending cash.
 	 */
-	Merc.bountyScore = function (row, nowSec, maxFf) {
+	Merc.bountyKey = function (row, nowSec) {
 		const b = row.bounty;
-		if (!b || row.state === 'no') return 0;
-		let when = 1;
-		if (row.state === 'soon') {
-			const waitMin = Math.max(0, (row.until || 0) - nowSec) / 60;
-			when = 1 / (1 + waitMin / 10);
-		}
-		let ease = 1;
-		if (maxFf && row.ff) ease = row.ff <= 2 ? 1 : Math.max(0.5, 1 - (row.ff - 2) / (2 * (maxFf - 2 || 1)));
-		return Math.round(b.total * when * ease);
+		if (!b || row.state === 'no') return null;
+		if (row.state === 'hit') return { bucket: 0, cash: b.total };
+		const waitMin = Math.max(0, (row.until || 0) - nowSec) / 60;
+		return { bucket: 1 + Math.floor(waitMin), cash: b.total };
 	};
 
 	Merc.money = function (n) {
@@ -199,9 +194,10 @@
 		return `$${n}`;
 	};
 
-	/** Bounty rows by score, best first; zero-score rows dropped. */
-	Merc.rankBounties = function (rows, nowSec, maxFf) {
-		return rows.map((r) => ({ ...r, score: Merc.bountyScore(r, nowSec, maxFf) })).filter((r) => r.score > 0).sort((a, b) => b.score - a.score);
+	/** Bounty rows: out now (most cash first), then soonest out; the unreachable dropped. */
+	Merc.rankBounties = function (rows, nowSec) {
+		return rows.map((r) => ({ ...r, order: Merc.bountyKey(r, nowSec) })).filter((r) => r.order)
+			.sort((a, b) => a.order.bucket - b.order.bucket || b.order.cash - a.order.cash || a.level - b.level);
 	};
 
 	/** Blacklist: ids cleared within the window, so a bounty you already collected is not re-listed. */
@@ -390,7 +386,7 @@
 #tm-panel table{width:100%;border-collapse:collapse}#tm-panel td{padding:4px 3px;border-top:1px solid #333}
 #tm-panel a{color:#7db8f0}#tm-panel a.tm-hit{display:inline-block;padding:2px 8px;border-radius:4px;background:#a33;color:#fff;font-weight:bold;text-decoration:none}
 #tm-panel tr.tm-state-hit td{background:#23351f}#tm-panel tr.tm-state-soon td{background:#33301c}#tm-panel tr.tm-danger td{background:#4a1f1f}
-#tm-panel .tm-note{color:#999;font-size:11px;line-height:1.35}#tm-status{min-height:15px;margin:4px 0;color:#e6c35c}
+#tm-panel td.tm-group{padding-top:8px;color:#e6c35c;font-weight:bold;border-top:0}#tm-panel .tm-note{color:#999;font-size:11px;line-height:1.35}#tm-status{min-height:15px;margin:4px 0;color:#e6c35c}
 #tm-panel .tm-log div{padding:3px 0;border-top:1px solid #333;font-size:11px;word-break:break-word}
 #tm-bar{position:fixed;top:0;left:0;right:0;z-index:99997;padding:6px 10px;background:#1b1b1b;color:#eee;font:bold 13px Arial,sans-serif;border-bottom:2px solid #666;text-align:center}
 #tm-bar.tm-ok{border-color:#3c8c4a}#tm-bar.tm-bad{border-color:#c0392b;color:#ff9b8f}`;
@@ -558,11 +554,13 @@
 	function render(rows, nowSec) {
 		listEl.textContent = '';
 		const body = el('tbody', {});
-		const maxFf = ffKeyIn.value.trim() ? Number(maxFfIn.value) || 0 : 0;
-		const bountyRows = Merc.rankBounties(rows.filter((x) => x.bounty), nowSec, maxFf);
+		const bountyRows = Merc.rankBounties(rows.filter((x) => x.bounty), nowSec);
 		const rest = rows.filter((x) => !x.bounty && (x.state !== 'no' || x.key[0] === 'p' || /^DANGER/.test(x.why)));
 		const shown = bountyRows.concat(rest, poolOn.checked ? poolRows : []);
+		let group = '';
 		for (const r of shown.slice(0, Merc.MAX_ROWS)) {
+			const g = r.bounty ? `Bounties (${bountyRows.length} of ${bountyRaw.flat().length} on the board, under FF ${Number(maxFfIn.value) || 'off'})` : r.key.startsWith('pool') ? 'Chain pool' : 'Contracts';
+			if (g !== group) { group = g; body.append(el('tr', {}, el('td', { colSpan: 4, className: 'tm-group', textContent: g }))); }
 			const left = r.until - nowSec;
 			const what = r.state === 'soon' && left > 0 ? `${r.why} ${Merc.clock(left)}` : r.why;
 			body.append(el('tr', { className: `tm-state-${r.state}${/^DANGER/.test(r.why) ? ' tm-danger' : ''}` },

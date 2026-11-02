@@ -24,9 +24,9 @@ alerts only: you click Attack, Start Fight and every hit yourself.
 - **No early discharge:** tick it and the radar skips targets Torn reports as eligible for early
   discharge. It reads the target's faction list for that, so factionless players are not checked.
 - **Bounty board:** reads the whole board (300 bounties), stacks every bounty on a target, drops
-  anyone above your FF limit, and ranks the rest by the money you can actually collect: hittable
-  now beats a countdown, easy FF beats a close one. The top 25 are watched live and the alert
-  says "$250k bounty: X is OUT". Tick a row once you collect and it hides for 24 h.
+  anyone above your FF limit, and lists the rest in hit order: out now (most cash first), then
+  whoever is out soonest, bigger bounty first within the same minute. The top 25 are watched live
+  and the alert says "$250k bounty: X is OUT". Tick a row once you collect and it hides for 24 h.
 - **Paid hits on a faction:** every member under one rule, for turtling or hitting offliners.
   Hittable members are listed lowest level first.
 - **Traders:** the "Online or idle" rule alerts when a trader lands or leaves hospital and is around.
