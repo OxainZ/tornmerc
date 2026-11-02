@@ -99,6 +99,7 @@ test('boardPages reads the whole board, at least one page, at most the cap', () 
 	assert.equal(Merc.boardPages(100), 1);
 	assert.equal(Merc.boardPages(101), 2);
 	assert.equal(Merc.boardPages(437), 5);
+	assert.equal(Merc.boardPages(4132), 42);
 	assert.equal(Merc.boardPages(99999), Merc.BOUNTY_MAX_PAGES);
 });
 
@@ -121,6 +122,35 @@ test('rankBounties: soonest out wins, cash breaks the tie, out-now on top', () =
 		{ key: 'dead', state: 'no', bounty: { perHit: 9e9 } },
 	], NOW);
 	assert.deepEqual(rows.map((r) => r.key), ['now2', 'now', 'same', 'small', 'mark']);
+});
+
+test('bountyKey divides a coming release by the hunters seen, but not an out-now target', () => {
+	assert.equal(Merc.bountyKey({ state: 'soon', bounty: { perHit: 1e6 }, until: NOW + 60, hunters: 3 }, NOW).cash, 250000);
+	assert.equal(Merc.bountyKey({ state: 'soon', bounty: { perHit: 500000 }, until: NOW + 60, hunters: 0 }, NOW).cash, 500000);
+	assert.equal(Merc.bountyKey({ state: 'hit', bounty: { perHit: 1e6 }, hunters: 3 }, NOW).cash, 1e6);
+	const rows = Merc.rankBounties([
+		{ key: 'farm', state: 'soon', bounty: { perHit: 1e6 }, until: NOW + 60, hunters: 3, level: 1 },
+		{ key: 'quiet', state: 'soon', bounty: { perHit: 500000 }, until: NOW + 70, hunters: 0, level: 1 },
+	], NOW);
+	assert.deepEqual(rows.map((r) => r.key), ['quiet', 'farm']);
+});
+
+test('noteHunter collects different hunters once each; pruneHunters keeps only targets still on the board', () => {
+	const h = new Map();
+	assert.equal(Merc.noteHunter(h, 1, 'Bob'), true);
+	assert.equal(Merc.noteHunter(h, 1, 'Bob'), false);
+	assert.equal(Merc.noteHunter(h, 1, 'Al'), true);
+	assert.equal(Merc.noteHunter(h, 2, ''), false);
+	assert.deepEqual(h.get(1), ['Bob', 'Al']);
+	h.set(9, ['X']);
+	assert.deepEqual([...Merc.pruneHunters(h, [1, 3]).keys()], [1]);
+});
+
+test('boardPeriod spreads the board over the budget: 4 s a page, 1 to 5 minutes', () => {
+	assert.equal(Merc.boardPeriod(1), 60);
+	assert.equal(Merc.boardPeriod(10), 60);
+	assert.equal(Merc.boardPeriod(42), 168);
+	assert.equal(Merc.boardPeriod(500), 300);
 });
 
 test('pruneSkip forgets collected bounties after the window and drops the old number-only format', () => {

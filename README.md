@@ -24,12 +24,14 @@ alerts only: you click Attack, Start Fight and every hit yourself.
   Add a note such as the contract link or who pays.
 - **No early discharge:** tick it and the radar skips targets Torn reports as eligible for early
   discharge. It reads the target's faction list for that, so factionless players are not checked.
-- **Bounty board:** reads the whole board (every page, up to 1,000 bounties), stacks every bounty on
+- **Bounty board:** reads the whole board (every page, up to 5,000 bounties, on a rolling schedule of about 15 calls a minute), stacks every bounty on
   a target and drops anyone above your FF limit, expired bounties, your own faction mates and
   bounties you listed. One hospitalisation pays **one** bounty, the highest on the target, so every
   row shows $ per hit, with the rest of the pile as "+$" for follow-up hits once they leave hospital
   again. Hit order: out now (most $ per hit first, with how long they have been out), then whoever
-  is out soonest, bigger bounty first within the same minute. The top 60 are watched live; 30 s
+  is out soonest, bigger bounty first within the same minute. A release is a race, so a coming
+  release counts $ divided by one plus the different hunters the radar has seen take that target
+  ("hunted x3"): an unhunted $500k outranks a $1m that three others camp. The top 120 are watched live; 30 s
   before a release you get "$250k bounty: X out in 0:30" so you are already sitting on the attack
   page, then "X is OUT" when the timer ends. "Hunted" marks a target whose last hospital stay was
   another player's hit: expect a race. Tick ✓ once you collect: the target hides until the board
