@@ -74,6 +74,9 @@ the radar runs.
   stats call per 10 minutes and one pool call per 5). Never torn.com pages.
 - At most 75 Torn requests a minute, leaving room under Torn's limit of 100.
 - One tab polls; a new tab takes over within 5 seconds of the old one closing.
+- Changing page keeps the radar warm: its memory (board, profiles, Fair Fight, schedule) is saved
+  every 30 s and on leaving, and the next page restores it if it is under 15 minutes old, so
+  nothing is read twice and the list is back at once.
 - Polling: 30 s for players who are out, every 5 min for a long hospital stay (a revive can end it
   early), 60 s inside the last half hour, 15 s inside the last 5 minutes and 2 s in the last minute.
   The release-second polls are never starved by a long list: the poll most overdue for its own

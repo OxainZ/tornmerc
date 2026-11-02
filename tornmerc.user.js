@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Merc Radar
-// @version      0.9.1
+// @version      0.9.2
 // @description  Free merc radar: watches your contracts, Torn's bounty board and paid-hit factions through the Torn API and alerts you the moment a target can be hit. Fair Fight on every target (FFScouter), chain kit, attack-page contract check, hit log. Alerts only; every attack stays manual.
 // @author       Oxain
 // @match        https://www.torn.com/*
@@ -22,7 +22,7 @@
 	/* ---------- pure core (exported for Node, no DOM) ---------- */
 
 	const Merc = {};
-	Merc.VERSION = '0.9.1';
+	Merc.VERSION = '0.9.2';
 	Merc.API = 'https://api.torn.com/v2';
 	Merc.FF_API = 'https://ffscouter.com/api/v1';
 	Merc.COMMENT = 'TornMerc';
@@ -46,6 +46,8 @@
 	Merc.CHAIN_WARN_SEC = 90;       // chain timer alert, once per drop
 	Merc.LOG_MAX = 100;
 	Merc.LOCK_TTL_MS = 5000;
+	Merc.WARM_MAX_MS = 15 * 60000;  // a page change restores the radar's memory (board, profiles, FF, schedule) if it is this fresh
+	Merc.WARM_EVERY_MS = 30000;
 	Merc.ALLOWED = [3843323, 4449883];              // Torn ids this radar runs for; empty = nobody. Add with: node tools/allow.js <id>, then release.
 	Merc.OWNER = 'Oxain';
 	Merc.RULES = [
@@ -378,7 +380,17 @@
 		return {
 			hit(now) { trim(now); stamps.push(now); },
 			remaining(now) { trim(now); return limit - stamps.length; },
+			stamps() { return stamps.slice(); },
+			restore(list, now) { stamps = (list || []).map(Number).filter((t) => t <= now); trim(now); },   // carried across a page change, so the minute's count is not lost
 		};
+	};
+
+	/** Is a warm snapshot worth restoring: recent, same key owner, on the list? */
+	Merc.warmOk = function (snap, nowMs, maxMs, myIdHint) {
+		if (!snap || typeof snap !== 'object' || !Number(snap.at)) return false;
+		if (nowMs - Number(snap.at) > maxMs || nowMs < Number(snap.at)) return false;
+		if (!Merc.allowed(snap.myId)) return false;
+		return !myIdHint || Number(snap.myId) === Number(myIdHint);
 	};
 
 	/** Rows that just became hittable. `prev` is a Set of keys that were hittable last time. */
@@ -706,8 +718,10 @@
 
 	/* ---------- radar ---------- */
 
-	const tabId = Math.random().toString(36).slice(2);
+	// The tab keeps its id across page changes (sessionStorage is per tab), so it keeps the polling lock instead of waiting 5 s for its own old lock to expire.
+	const tabId = (() => { try { const t = sessionStorage.getItem('tornmerc.tab') || Math.random().toString(36).slice(2); sessionStorage.setItem('tornmerc.tab', t); return t; } catch (e) { return Math.random().toString(36).slice(2); } })();
 	const budget = Merc.makeBudget(Merc.BUDGET_PER_MIN);
+	let warmAt = 0;
 	const live = new Map();       // player id -> latest player object
 	const members = new Map();    // faction id -> member ids
 	const dueAt = {};
@@ -728,6 +742,40 @@
 	let chainArmed = true;
 	let running = false;
 	let problem = '';
+
+	/* A page change used to start from nothing: the whole board, every profile and the FF data read again, minutes of
+	   rebuilding. The radar now writes its memory to localStorage every 30 s and on leaving the page, and the next
+	   page restores it if it is under 15 minutes old. Nothing secret is in it: the key stays in script storage. */
+	function snapshot() {
+		if (!running || !myId) return;
+		try {
+			localStorage.setItem('tornmerc.warm', JSON.stringify({
+				at: Date.now(), myId, myStatus, myFaction, myBars, barsOk, attacksOk, bountyRaw, bountyTotal, poolRows, poolAt, dueAt, period,
+				live: [...live], members: [...members], stats: [...stats], statsAt: [...statsAt], fresh: [...fresh], outSince: [...outSince], lastHittable: [...lastHittable],
+				prevHits: [...prevHits], soonWarned: [...soonWarned], stamps: budget.stamps(),
+			}));
+			warmAt = Date.now();
+		} catch (e) { /* storage full or blocked: the next page starts cold */ }
+	}
+	function warmUp() {
+		let snap = null;
+		try { snap = JSON.parse(localStorage.getItem('tornmerc.warm')); } catch (e) { return false; }
+		if (!Merc.warmOk(snap, Date.now(), Merc.WARM_MAX_MS)) return false;
+		const fill = (map, list) => { map.clear(); for (const [k, v] of list || []) map.set(Number(k), v); };
+		myId = Number(snap.myId); myStatus = snap.myStatus || null; myFaction = Number(snap.myFaction) || 0; myBars = snap.myBars || null;
+		barsOk = snap.barsOk !== false; attacksOk = snap.attacksOk !== false;
+		bountyRaw = (snap.bountyRaw || []).map((p) => (Array.isArray(p) ? p : []));   // JSON turns an unread page into null
+		bountyTotal = Number(snap.bountyTotal) || 0;
+		poolRows = Array.isArray(snap.poolRows) ? snap.poolRows : []; poolAt = Number(snap.poolAt) || 0;
+		Object.assign(dueAt, snap.dueAt || {}); Object.assign(period, snap.period || {});
+		fill(live, snap.live); fill(members, snap.members); fill(stats, snap.stats); fill(statsAt, snap.statsAt); fill(outSince, snap.outSince); fill(lastHittable, snap.lastHittable);
+		fresh = new Map((snap.fresh || []).map(([k, v]) => [Number(k), v]));
+		prevHits = new Set(snap.prevHits || []); soonWarned = new Set(snap.soonWarned || []);
+		budget.restore(snap.stamps, Date.now());
+		rebuildBounties();
+		return true;
+	}
+	window.addEventListener('pagehide', snapshot);
 
 	function readLock() { try { return JSON.parse(localStorage.getItem('tornmerc.lock')); } catch (e) { return null; } }
 	function holdLock(now) {
@@ -954,6 +1002,7 @@
 			for (const r of soon.alerts) alertMe(`${Merc.money(r.bounty.perHit)} bounty: ${r.name} out in ${Merc.clock(r.until - nowSec)}`, `Level ${r.level}${r.ff ? ` · FF ${r.ff.toFixed(2)}` : ''}${r.hunter ? ` · last taken by ${r.hunter}` : ''} · click to sit on the attack page`, Merc.attackUrl(r.id));
 			render(rows, nowSec);
 			updateBar(rows, nowSec);
+			if (Date.now() - warmAt > Merc.WARM_EVERY_MS) snapshot();
 			const n = watches.length + factions.length;
 			const nb = bountyOn.checked ? ` · ${bountyWatches.length} bounties (${bountyRaw.flat().length} of ${bountyTotal || '?'} on board)` : '';
 			const hits = Merc.hitsAffordable(myBars);
@@ -995,6 +1044,7 @@
 		radarBtn.textContent = 'Stop radar';
 		toggle.classList.add('tm-live');
 		save('running', true);
+		if (warmUp()) say('Picking up where the last page left off.');
 		tick();
 	}
 

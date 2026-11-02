@@ -271,6 +271,20 @@ test('budget slides over one minute', () => {
 	b.hit(0); b.hit(1000);
 	assert.equal(b.remaining(2000), 0);
 	assert.equal(b.remaining(60500), 1);
+	assert.deepEqual(b.stamps(), [1000]);
+	b.restore([4000, 40000, 70000, 99999999], 65000);   // across a page change: stamps older than a minute trimmed, future ones ignored
+	assert.equal(b.remaining(65000), 1);
+});
+
+test('warmOk restores only a recent snapshot of an allowed owner', () => {
+	const ok = { at: 1000000, myId: Merc.ALLOWED[0] };
+	assert.equal(Merc.warmOk(ok, 1000000 + 60000, 900000), true);
+	assert.equal(Merc.warmOk(ok, 1000000 + 900001, 900000), false, 'too old');
+	assert.equal(Merc.warmOk(ok, 999999, 900000), false, 'from the future');
+	assert.equal(Merc.warmOk({ at: 1000000, myId: 1 }, 1000000, 900000), false, 'not on the list');
+	assert.equal(Merc.warmOk(ok, 1000000, 900000, 999), false, 'another owner');
+	assert.equal(Merc.warmOk(null, 1000000, 900000), false);
+	assert.equal(Merc.warmOk({ myId: Merc.ALLOWED[0] }, 1000000, 900000), false);
 });
 
 test('newlyHit alerts once per clearance', () => {
