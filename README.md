@@ -65,7 +65,9 @@ alerts only: you click Attack, Start Fight and every hit yourself.
   an optional target pool of inactive players under a FF and level limit, out of hospital first,
   refreshed every 5 minutes, for when you are hired to chain or chain-save.
 
-Alerts are a desktop notification, a sound and the tab title. The **Merc** button turns green while
+Alerts are a popup notification, a sound and the tab title, plus a "Last alert … Attack" line at the
+top of the panel. Under **Settings** you can switch the popups off (phone) and the 30 s heads-up
+off; each browser keeps its own choice. The **Merc** button turns green while
 the radar runs.
 
 ## API use

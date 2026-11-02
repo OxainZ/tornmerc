@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Merc Radar
-// @version      0.9.2
+// @version      0.9.3
 // @description  Free merc radar: watches your contracts, Torn's bounty board and paid-hit factions through the Torn API and alerts you the moment a target can be hit. Fair Fight on every target (FFScouter), chain kit, attack-page contract check, hit log. Alerts only; every attack stays manual.
 // @author       Oxain
 // @match        https://www.torn.com/*
@@ -22,7 +22,7 @@
 	/* ---------- pure core (exported for Node, no DOM) ---------- */
 
 	const Merc = {};
-	Merc.VERSION = '0.9.2';
+	Merc.VERSION = '0.9.3';
 	Merc.API = 'https://api.torn.com/v2';
 	Merc.FF_API = 'https://ffscouter.com/api/v1';
 	Merc.COMMENT = 'TornMerc';
@@ -634,6 +634,8 @@
 	const addBtn = el('button', { textContent: 'Add' });
 	const radarBtn = el('button', { textContent: 'Start radar' });
 	const soundIn = el('input', { type: 'checkbox', checked: load('sound', true) });
+	const popupIn = el('input', { type: 'checkbox', checked: load('popup', true) });    // off on a phone: the panel line and the ping are enough
+	const headsUpIn = el('input', { type: 'checkbox', checked: load('headsUp', true) }); // the 30 s "out in" alert; off halves the noise
 	const volumeIn = el('input', { type: 'range', min: 0, max: 100, value: load('volume', 25), title: 'Alert volume' });
 	const bountyOn = el('input', { type: 'checkbox', checked: load('bountyOn', false) });
 	const bountyMaxLevel = el('input', { type: 'number', min: 1, max: 100, placeholder: 'any', value: load('bountyMaxLevel', '') });
@@ -675,7 +677,9 @@
 		el('details', {}, el('summary', { textContent: 'Settings' }),
 			field('Torn API key', keyIn),
 			el('div', { className: 'tm-note', textContent: 'Limited access adds the proof log (every hit you make on a watched target, with its attack log link) and the claims tally; Minimal shows your energy and life on the attack page and your chain timer; Public does everything else. Stored only in this browser\'s script storage and sent only to api.torn.com. Nothing is shared with anyone. Used only to read player, faction, bounty and bar data for your own alerts.' }),
-			el('label', {}, soundIn, ' Sound on alerts'), field('Alert volume', volumeIn)));
+			el('label', {}, soundIn, ' Sound on alerts'), field('Alert volume', volumeIn),
+			el('label', {}, popupIn, ' Popup notifications (off = panel line and sound only; handy on a phone)'),
+			el('label', {}, headsUpIn, ` Heads-up ${Merc.SOON_WARN_SEC} s before a bounty release (off = only "is OUT")`)));
 	const toggle = el('button', { id: 'tm-btn', textContent: 'Merc', onclick: () => { panel.hidden = !panel.hidden; } });
 	document.body.append(toggle, panel);
 
@@ -706,8 +710,8 @@
 		// Clicking the popup is the user's click: it goes to the page they asked for. It never attacks or revives.
 		const go = () => { window.focus(); if (url) location.assign(url); };
 		// The browser's own Notification delivers its click; Tampermonkey's GM_notification often drops onclick on Windows toasts.
-		let shown = false;
-		if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+		let shown = !popupIn.checked;   // popups off: the panel line, the title and the ping still happen
+		if (!shown && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
 			try { const n = new Notification(title, { body: text, tag: 'tornmerc', renotify: true }); n.onclick = () => { n.close(); go(); }; shown = true; } catch (e) { /* fall through to GM_notification */ }
 		}
 		if (!shown && typeof GM_notification === 'function') GM_notification({ title, text, timeout: 15000, onclick: go });
@@ -999,7 +1003,7 @@
 			prevHits = new Set(sure.filter((r) => r.state === 'hit').map((r) => r.key));
 			const soon = Merc.newlySoon(sure, soonWarned, nowSec, Merc.SOON_WARN_SEC);   // the race is won by whoever is already on the attack page
 			soonWarned = soon.warned;
-			for (const r of soon.alerts) alertMe(`${Merc.money(r.bounty.perHit)} bounty: ${r.name} out in ${Merc.clock(r.until - nowSec)}`, `Level ${r.level}${r.ff ? ` · FF ${r.ff.toFixed(2)}` : ''}${r.hunter ? ` · last taken by ${r.hunter}` : ''} · click to sit on the attack page`, Merc.attackUrl(r.id));
+			if (headsUpIn.checked) for (const r of soon.alerts) alertMe(`${Merc.money(r.bounty.perHit)} bounty: ${r.name} out in ${Merc.clock(r.until - nowSec)}`, `Level ${r.level}${r.ff ? ` · FF ${r.ff.toFixed(2)}` : ''}${r.hunter ? ` · last taken by ${r.hunter}` : ''} · click to sit on the attack page`, Merc.attackUrl(r.id));
 			render(rows, nowSec);
 			updateBar(rows, nowSec);
 			if (Date.now() - warmAt > Merc.WARM_EVERY_MS) snapshot();
@@ -1050,6 +1054,8 @@
 
 	radarBtn.addEventListener('click', () => { if (running) stop(); else start(); });
 	soundIn.addEventListener('change', () => save('sound', soundIn.checked));
+	popupIn.addEventListener('change', () => save('popup', popupIn.checked));
+	headsUpIn.addEventListener('change', () => save('headsUp', headsUpIn.checked));
 	volumeIn.addEventListener('change', () => { save('volume', Number(volumeIn.value)); beep(); });
 	keyIn.addEventListener('change', () => save('key', keyIn.value.trim()));
 	ffKeyIn.addEventListener('change', () => save('ffKey', ffKeyIn.value.trim()));
