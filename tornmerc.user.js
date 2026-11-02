@@ -41,7 +41,7 @@
 	Merc.CHAIN_WARN_SEC = 90;       // chain timer alert, once per drop
 	Merc.LOG_MAX = 100;
 	Merc.LOCK_TTL_MS = 5000;
-	Merc.ALLOWED = [];              // Torn ids this radar runs for; empty = nobody. Add with: node tools/allow.js <id>, then release.
+	Merc.ALLOWED = [3843323, 4449883];              // Torn ids this radar runs for; empty = nobody. Add with: node tools/allow.js <id>, then release.
 	Merc.OWNER = 'Oxain';
 	Merc.RULES = [
 		['any', 'Any activity'], ['online', 'Online now'], ['active', 'Online or idle (traders)'],
