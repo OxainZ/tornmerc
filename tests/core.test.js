@@ -284,7 +284,8 @@ test('the budget stays under Torn\'s limit', () => {
 
 test('the script never requests torn.com pages or automates input', () => {
 	const src = fs.readFileSync(path.join(__dirname, '..', 'tornmerc.user.js'), 'utf8');
-	assert.doesNotMatch(src, /\.click\(|dispatchEvent|\.submit\(|location\.(href|assign|replace)|window\.open/);
+	assert.doesNotMatch(src, /\.click\(|dispatchEvent|\.submit\(|location\.(href|replace)|window\.open/);
+	assert.equal((src.match(/location\.assign\(/g) || []).length, 1, 'only the notification click navigates, and only to the page the user clicked for');
 	assert.doesNotMatch(src, /innerHTML/);
 	assert.doesNotMatch(src, /faction\/chain/);   // my chain timer comes from my own bars, never a faction endpoint
 	assert.deepEqual([...new Set(src.match(/@connect\s+\S+/g))], ['@connect      api.torn.com', '@connect      ffscouter.com']);
