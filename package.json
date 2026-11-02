@@ -1,9 +1,10 @@
 {
   "name": "tornmerc",
-  "version": "0.4.0",
+  "version": "0.8.0",
   "private": true,
   "scripts": {
     "test": "node --test \"tests/*.test.js\"",
-    "meta": "node tools/meta.js"
+    "meta": "node tools/meta.js",
+    "allow": "node tools/allow.js"
   }
 }

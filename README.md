@@ -1,11 +1,12 @@
 # Torn Merc Radar
 
-A free Tampermonkey userscript for mercs in Torn City. It watches your contracts, Torn's bounty
+A private Tampermonkey userscript for mercs in Torn City, by invitation: it runs only for Torn ids on its allowlist. It watches your contracts, Torn's bounty
 board and the factions you are paid to hit, and alerts you the moment a target can be hit. It is
 alerts only: you click Attack, Start Fight and every hit yourself.
 
 ## Install
 
+0. Ask Oxain for access with your Torn id. Without it the radar stops at start and shows your id.
 1. Install Tampermonkey (Firefox or Chrome).
 2. Open the install link and click **Install**:
    https://raw.githubusercontent.com/OxainZ/tornmerc/main/tornmerc.user.js
@@ -84,7 +85,7 @@ Not included from paid radars: illegal-hit evidence images and device sync.
 
 ## Licence
 
-MIT. Fork it, change it, share it.
+All rights reserved. Use is by allowlisted Torn id only; no copying, redistribution or removal of the check. See LICENSE.
 
 ## Develop
 

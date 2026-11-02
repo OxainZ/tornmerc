@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Merc Radar
-// @version      0.7.1
+// @version      0.8.0
 // @description  Free merc radar: watches your contracts, Torn's bounty board and paid-hit factions through the Torn API and alerts you the moment a target can be hit. Fair Fight on every target (FFScouter), chain kit, attack-page contract check, hit log. Alerts only; every attack stays manual.
 // @author       Oxain
 // @match        https://www.torn.com/*
@@ -22,7 +22,7 @@
 	/* ---------- pure core (exported for Node, no DOM) ---------- */
 
 	const Merc = {};
-	Merc.VERSION = '0.7.1';
+	Merc.VERSION = '0.8.0';
 	Merc.API = 'https://api.torn.com/v2';
 	Merc.FF_API = 'https://ffscouter.com/api/v1';
 	Merc.COMMENT = 'TornMerc';
@@ -41,6 +41,8 @@
 	Merc.CHAIN_WARN_SEC = 90;       // chain timer alert, once per drop
 	Merc.LOG_MAX = 100;
 	Merc.LOCK_TTL_MS = 5000;
+	Merc.ALLOWED = [];              // Torn ids this radar runs for; empty = nobody. Add with: node tools/allow.js <id>, then release.
+	Merc.OWNER = 'Oxain';
 	Merc.RULES = [
 		['any', 'Any activity'], ['online', 'Online now'], ['active', 'Online or idle (traders)'],
 		['within:2', 'Active in last 2 min'], ['within:5', 'Active in last 5 min'], ['within:10', 'Active in last 10 min'],
@@ -322,6 +324,17 @@
 	/** Rows that just became hittable. `prev` is a Set of keys that were hittable last time. */
 	Merc.newlyHit = function (rows, prev) {
 		return rows.filter((r) => r.state === 'hit' && !prev.has(r.key));
+	};
+
+	/** The gate: the radar runs only for a key owner whose Torn id is on the list. Fails closed on an empty list or an unknown id. */
+	Merc.allowed = function (id, list) {
+		const n = Number(id);
+		return Number.isSafeInteger(n) && n > 0 && (list || Merc.ALLOWED).map(Number).includes(n);
+	};
+
+	/** The line a locked-out player sees: their own id, so they can ask for access. */
+	Merc.deniedText = function (id) {
+		return `This radar is private. Your Torn id is ${Number(id) || '?'}; ask ${Merc.OWNER} for access.`;
 	};
 
 	/** Who polls: the tab holding a fresh lock. lock = {tab, at}. */
@@ -670,7 +683,11 @@
 	}
 
 	function absorb(src, json) {
-		if (src.key === 'me') { myStatus = json.profile.status; myId = Number(json.profile.id); myFaction = Number(json.profile.faction_id) || 0; return [json.profile]; }
+		if (src.key === 'me') {
+			myId = Number(json.profile.id);
+			if (!Merc.allowed(myId)) { stop(Merc.deniedText(myId)); throw new Error(Merc.deniedText(myId)); }   // the key owner is not on the list: nothing else is read
+			myStatus = json.profile.status; myFaction = Number(json.profile.faction_id) || 0; return [json.profile];
+		}
 		if (src.key === 'bars') {
 			myBars = json.bars;
 			if (chainOn.checked) {

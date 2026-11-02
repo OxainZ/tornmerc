@@ -22,6 +22,9 @@ tornmerc is Oxain's standalone, free Torn City merc radar: one Tampermonkey user
 - **Remote data never touches `innerHTML`.** Use `textContent`.
 - **One file, no build.** Pure logic lives on `Merc` and is exported for Node; DOM code stays below
   the `typeof document` guard. Add a test for each pure helper. `npm test`.
+- **Private by Torn id.** `Merc.ALLOWED` is the allowlist; the radar stops at the first profile read
+  when the key owner is not on it, and an empty list means nobody. `node tools/allow.js <id>` adds
+  one, then release. Licence is all rights reserved since 0.8.0; never reintroduce MIT text.
 - **Own code only.** Merogie's radar is a paid product: feature ideas are fine, copying its code is not.
 - **Release = bump `@version` + `Merc.VERSION`, run `npm run meta`, commit, push.** Tampermonkey
   checks `tornmerc.meta.js` for updates; a stale meta file means nobody updates.

@@ -348,6 +348,20 @@ test('clock and tct are short', () => {
 	assert.equal(Merc.tct(3661), '01:01:01');
 });
 
+test('the gate fails closed: only a listed id runs the radar', () => {
+	assert.equal(Merc.allowed(5, [5, 7]), true);
+	assert.equal(Merc.allowed('7', [5, 7]), true);
+	assert.equal(Merc.allowed(6, [5, 7]), false);
+	assert.equal(Merc.allowed(0, [0]), false);
+	assert.equal(Merc.allowed(5, []), false);
+	assert.equal(Merc.allowed(undefined, [5]), false);
+	assert.ok(Array.isArray(Merc.ALLOWED));
+	assert.match(Merc.deniedText(123), /^This radar is private\. Your Torn id is 123; ask /);
+	assert.match(Merc.deniedText(null), /Torn id is \?;/);
+	const src = fs.readFileSync(path.join(__dirname, '..', 'tornmerc.user.js'), 'utf8');
+	assert.match(src, /if \(!Merc\.allowed\(myId\)\) \{ stop\(/, 'the first profile read checks the gate');
+});
+
 test('the budget stays under Torn\'s limit', () => {
 	assert.ok(Merc.BUDGET_PER_MIN <= 100);
 });
