@@ -62,16 +62,56 @@ test('evaluate lets an unknown location through when mine is unknown', () => {
 	assert.equal(Merc.evaluate({ status: okay }, { rule: 'any' }, null, NOW).state, 'hit');
 });
 
-test('bountyWatches picks the lowest-level paying bounties and skips my own', () => {
-	const b = (target_id, target_level, reward, quantity, lister_id) => ({ target_id, target_name: `t${target_id}`, target_level, reward, quantity, lister_id, lister_name: lister_id ? `l${lister_id}` : null });
+test('bountyWatches stacks every bounty on a target and filters by me, level, reward, FF and blacklist', () => {
+	const b = (target_id, target_level, reward, quantity, lister_id, valid_until) => ({ target_id, target_name: `t${target_id}`, target_level, reward, quantity, lister_id, lister_name: lister_id ? `l${lister_id}` : null, valid_until: valid_until || 0 });
+	const stats = new Map([[4, { ff: 5 }], [2, { ff: 1.5 }]]);
 	const list = Merc.bountyWatches([
-		b(1, 50, 1e6, 1, 7), b(2, 10, 100000, 2, 7), b(2, 10, 50000, 1, 8), b(3, 5, 1000, 1, 7), b(4, 8, 500000, 1, 99), b(99, 1, 1e9, 1, 7),
-	], { myId: 99, maxLevel: 40, minReward: 20000, max: 10 });
+		b(1, 50, 1e6, 1, 7), b(2, 10, 100000, 2, 7, 500), b(2, 10, 50000, 1, 8, 900), b(3, 5, 1000, 1, 7), b(4, 8, 500000, 1, 7), b(5, 9, 400000, 1, 7), b(99, 1, 1e9, 1, 7), b(6, 3, 1e6, 1, 99),
+	], { myId: 99, maxLevel: 40, minReward: 20000, maxFf: 3, stats, skip: new Set([5]), max: 10 });
 	assert.deepEqual(list.map((w) => w.id), [2]);
-	assert.equal(list[0].bounty.total, 200000);
-	assert.equal(list[0].bounty.lister, 'l7');
+	assert.equal(list[0].bounty.total, 250000);
+	assert.equal(list[0].bounty.count, 2);
+	assert.equal(list[0].bounty.quantity, 3);
+	assert.equal(list[0].bounty.expires, 900);
 	assert.equal(list[0].rule, 'any');
-	assert.equal(Merc.bountyWatches([b(1, 5, 1, 1, 2), b(2, 3, 1, 1, 2)], { max: 1 })[0].id, 2);
+	const byMoney = Merc.bountyWatches([b(1, 5, 1, 1, 2), b(2, 3, 9, 1, 2)], { max: 1 });
+	assert.equal(byMoney[0].id, 2);
+	assert.equal(Merc.bountyWatches([b(7, 5, 1, 1, 2)], { maxFf: 3, stats: new Map() }).length, 1, 'unknown FF is kept until stats arrive');
+});
+
+test('bountyScore ranks by money I can collect now', () => {
+	const row = (state, total, ff, until) => ({ state, bounty: { total }, ff, until });
+	assert.equal(Merc.bountyScore(row('hit', 100000, 1.2), NOW, 3), 100000);
+	assert.equal(Merc.bountyScore(row('hit', 100000, 3, 0), NOW, 3), 50000);
+	assert.equal(Merc.bountyScore(row('hit', 100000, 0), NOW, 3), 100000);
+	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 60), NOW, 3), 90000);
+	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 600), NOW, 3), 60000);
+	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 7200), NOW, 3), 10000);
+	assert.equal(Merc.bountyScore(row('no', 100000, 1), NOW, 3), 0);
+	assert.equal(Merc.bountyScore({ state: 'hit' }, NOW, 3), 0);
+});
+
+test('rankBounties puts the best money first and drops the dead', () => {
+	const rows = Merc.rankBounties([
+		{ key: 'a', state: 'soon', bounty: { total: 1e6 }, until: NOW + 7200 },
+		{ key: 'b', state: 'hit', bounty: { total: 200000 } },
+		{ key: 'c', state: 'no', bounty: { total: 9e9 } },
+	], NOW, 0);
+	assert.deepEqual(rows.map((r) => r.key), ['b', 'a']);
+	assert.equal(rows[0].score, 200000);
+});
+
+test('pruneSkip forgets collected bounties after the window', () => {
+	const m = Merc.pruneSkip(new Map([[1, NOW - 10], [2, NOW - Merc.BOUNTY_BLACKLIST_H * 3600 - 1]]), NOW);
+	assert.deepEqual([...m.keys()], [1]);
+});
+
+test('money is short', () => {
+	assert.equal(Merc.money(950), '$950');
+	assert.equal(Merc.money(250000), '$250k');
+	assert.equal(Merc.money(1500000), '$1.5m');
+	assert.equal(Merc.money(25000000), '$25m');
+	assert.equal(Merc.money(2.5e9), '$2.50b');
 });
 
 test('sources dedupes and reads a no-ED target through its faction', () => {
@@ -123,6 +163,7 @@ test('apiError separates fatal errors from one bad source', () => {
 
 test('url encodes the key, tags the key log and can skip the cache', () => {
 	assert.equal(Merc.url('/user/basic', 'a b'), 'https://api.torn.com/v2/user/basic?key=a%20b&comment=TornMerc');
+	assert.equal(Merc.url('/torn/bounties?limit=100&offset=100', 'k'), 'https://api.torn.com/v2/torn/bounties?limit=100&offset=100&key=k&comment=TornMerc');
 	assert.ok(Merc.url('/user/basic', 'k', 123).endsWith('&timestamp=123'));
 });
 
