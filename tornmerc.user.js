@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Merc Radar
-// @version      0.7.0
+// @version      0.7.1
 // @description  Free merc radar: watches your contracts, Torn's bounty board and paid-hit factions through the Torn API and alerts you the moment a target can be hit. Fair Fight on every target (FFScouter), chain kit, attack-page contract check, hit log. Alerts only; every attack stays manual.
 // @author       Oxain
 // @match        https://www.torn.com/*
@@ -22,7 +22,7 @@
 	/* ---------- pure core (exported for Node, no DOM) ---------- */
 
 	const Merc = {};
-	Merc.VERSION = '0.7.0';
+	Merc.VERSION = '0.7.1';
 	Merc.API = 'https://api.torn.com/v2';
 	Merc.FF_API = 'https://ffscouter.com/api/v1';
 	Merc.COMMENT = 'TornMerc';
@@ -453,7 +453,7 @@
 #tm-panel table{width:100%;border-collapse:collapse}#tm-panel td{padding:4px 3px;border-top:1px solid #333}
 #tm-panel a{color:#7db8f0}#tm-panel a.tm-hit{display:inline-block;padding:2px 8px;border-radius:4px;background:#a33;color:#fff;font-weight:bold;text-decoration:none}
 #tm-panel tr.tm-state-hit td{background:#23351f}#tm-panel tr.tm-state-soon td{background:#33301c}#tm-panel tr.tm-danger td{background:#4a1f1f}
-#tm-panel td.tm-group{padding-top:8px;color:#e6c35c;font-weight:bold;border-top:0}#tm-panel .tm-note{color:#999;font-size:11px;line-height:1.35}#tm-status{min-height:15px;margin:4px 0;color:#e6c35c}
+#tm-panel td.tm-group{padding-top:8px;color:#e6c35c;font-weight:bold;border-top:0}#tm-panel .tm-note{color:#999;font-size:11px;line-height:1.35}#tm-status{min-height:15px;margin:4px 0;color:#e6c35c}#tm-last{margin:4px 0;font-weight:bold}#tm-last:empty{display:none}
 #tm-panel .tm-log div{padding:3px 0;border-top:1px solid #333;font-size:11px;word-break:break-word}
 #tm-bar{position:fixed;top:0;left:0;right:0;z-index:99997;padding:6px 10px;background:#1b1b1b;color:#eee;font:bold 13px Arial,sans-serif;border-bottom:2px solid #666;text-align:center}
 #tm-bar.tm-ok{border-color:#3c8c4a}#tm-bar.tm-bad{border-color:#c0392b;color:#ff9b8f}`;
@@ -501,13 +501,14 @@
 	const poolMaxFf = el('input', { type: 'number', min: 1, max: 10, step: 0.1, value: load('poolMaxFf', '3') });
 	const poolMaxLevel = el('input', { type: 'number', min: 1, max: 100, value: load('poolMaxLevel', '100') });
 	const statusEl = el('div', { id: 'tm-status' });
+	const lastEl = el('div', { id: 'tm-last' });
 	const listEl = el('div', {});
 	const manageEl = el('div', {});
 	const logEl = el('div', { className: 'tm-log' });
 	const clearLogBtn = el('button', { textContent: 'Clear log' });
 
 	const panel = el('div', { id: 'tm-panel', hidden: true },
-		el('strong', { textContent: 'Merc Radar' }), statusEl, radarBtn, listEl,
+		el('strong', { textContent: 'Merc Radar' }), statusEl, radarBtn, lastEl, listEl,
 		el('details', {}, el('summary', { textContent: 'Contracts' }),
 			el('div', { className: 'tm-two' }, field('Type', typeIn), field('Ids', idsIn)),
 			field('Contract terms', ruleIn),
@@ -559,10 +560,16 @@
 	function alertMe(title, text, url) {
 		beep();
 		// Clicking the popup is the user's click: it goes to the page they asked for. It never attacks or revives.
-		const go = () => { if (url) location.assign(url); else window.focus(); };
-		if (typeof GM_notification === 'function') GM_notification({ title, text, timeout: 15000, onclick: go });
-		else if (typeof Notification !== 'undefined' && Notification.permission === 'granted') { const n = new Notification(title, { body: text }); n.onclick = go; }
+		const go = () => { window.focus(); if (url) location.assign(url); };
+		// The browser's own Notification delivers its click; Tampermonkey's GM_notification often drops onclick on Windows toasts.
+		let shown = false;
+		if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+			try { const n = new Notification(title, { body: text, tag: 'tornmerc', renotify: true }); n.onclick = () => { n.close(); go(); }; shown = true; } catch (e) { /* fall through to GM_notification */ }
+		}
+		if (!shown && typeof GM_notification === 'function') GM_notification({ title, text, timeout: 15000, onclick: go });
 		document.title = `(!) ${title}`;
+		lastEl.textContent = '';
+		if (url) lastEl.append(el('span', { textContent: `Last alert: ${title} ` }), el('a', { className: 'tm-hit', href: url, textContent: 'Attack' }));   // the in-page fallback when the toast click goes nowhere
 	}
 
 	/* ---------- radar ---------- */
@@ -798,6 +805,8 @@
 	function start() {
 		if (!keyIn.value.trim()) { say('Paste your API key under Settings first.'); return; }
 		save('key', keyIn.value.trim());
+		// Asked on the Start click (a user gesture), so the browser's own notifications, whose click opens the attack page, are allowed.
+		if (typeof Notification !== 'undefined' && Notification.permission === 'default') { try { Notification.requestPermission().catch(() => {}); } catch (e) { /* old browsers take a callback; GM_notification covers them */ } }
 		running = true;
 		problem = '';
 		barsOk = true;
