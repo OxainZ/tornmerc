@@ -1,9 +1,9 @@
 {
   "name": "tornmerc",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
   "scripts": {
     "test": "node --test \"tests/*.test.js\"",
-    "meta": "node -e \"const s=require('fs').readFileSync('tornmerc.user.js','utf8');require('fs').writeFileSync('tornmerc.meta.js',s.match(/\/\/ ==UserScript==[^]*?==\/UserScript==\n/)[0])\""
+    "meta": "node tools/meta.js"
   }
 }
