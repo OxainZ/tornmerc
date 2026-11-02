@@ -33,7 +33,10 @@ alerts only: you click Attack, Start Fight and every hit yourself.
   release counts $ divided by one plus the different hunters the radar has seen take that target
   ("hunted x3"): an unhunted $500k outranks a $1m that three others camp. The top 120 are watched live; 30 s
   before a release you get "$250k bounty: X out in 0:30" so you are already sitting on the attack
-  page, then "X is OUT" when the timer ends. "Hunted" marks a target whose last hospital stay was
+  page, then "X is OUT" when the timer ends. Torn serves the board from a cache, so once a target is
+  within 5 minutes of release or out, the radar reads that player's own bounty list live and alerts
+  only if the money is still there; a claimed bounty drops off the list minutes before the board
+  notices. "Hunted" marks a target whose last hospital stay was
   another player's hit: expect a race. Tick ✓ once you collect: the target hides until the board
   changes for them (a claim or a new bounty), or 24 h at most.
 - **Paid hits on a faction:** every member under one rule, for a faction that pays you in a ranked

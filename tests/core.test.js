@@ -94,6 +94,35 @@ test('bountyWatches stacks every bounty on a target and filters by me, level, re
 	assert.equal(Merc.bountyWatches([b(7, 5, 1, 1, 2)], { maxFf: 3, stats: new Map() }).length, 1, 'unknown FF is kept until stats arrive');
 });
 
+test('hotBountyIds: bounty targets out now or inside the lead of release', () => {
+	const rows = [
+		{ id: 1, bounty: {}, state: 'hit' },
+		{ id: 2, bounty: {}, state: 'soon', until: NOW + 299 },
+		{ id: 3, bounty: {}, state: 'soon', until: NOW + 301 },
+		{ id: 4, bounty: {}, state: 'soon', until: NOW - 1 },
+		{ id: 5, state: 'hit' },
+		{ id: 6, bounty: {}, state: 'no' },
+	];
+	assert.deepEqual(Merc.hotBountyIds(rows, NOW, 300), [1, 2]);
+});
+
+test('mergeFresh lays live per-target lists over the cached board', () => {
+	const board = [{ target_id: 1, reward: 5 }, { target_id: 2, reward: 7 }, { target_id: 2, reward: 8 }, { target_id: 3, reward: 9 }];
+	const fresh = new Map([[2, { at: NOW, list: [{ target_id: 2, reward: 70 }] }], [3, { at: NOW, list: [] }], [4, { at: NOW, list: [{ reward: 1 }] }]]);
+	const out = Merc.mergeFresh(board, fresh);
+	assert.deepEqual(out.map((b) => [b.target_id, b.reward]), [[1, 5], [2, 70], [4, 1]], 'claimed (empty live list) drops; live replaces; a target the board has not listed yet appears');
+	assert.deepEqual(Merc.mergeFresh(board, null).length, 4);
+});
+
+test('pruneFresh and verified: a live read counts only while it is young', () => {
+	const fresh = new Map([[1, { at: NOW - 100, list: [] }], [2, { at: NOW - 700, list: [] }]]);
+	assert.deepEqual([...Merc.pruneFresh(fresh, NOW, 600).keys()], [1]);
+	assert.equal(Merc.verified(fresh, 1, NOW, 120), true);
+	assert.equal(Merc.verified(fresh, 1, NOW + 30, 120), false);
+	assert.equal(Merc.verified(fresh, 9, NOW, 120), false);
+	assert.equal(Merc.verified(null, 1, NOW, 120), false);
+});
+
 test('boardPages reads the whole board, at least one page, at most the cap', () => {
 	assert.equal(Merc.boardPages(0), 1);
 	assert.equal(Merc.boardPages(100), 1);
