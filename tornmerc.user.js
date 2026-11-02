@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Merc Radar
-// @version      0.9.3
+// @version      0.9.4
 // @description  Free merc radar: watches your contracts, Torn's bounty board and paid-hit factions through the Torn API and alerts you the moment a target can be hit. Fair Fight on every target (FFScouter), chain kit, attack-page contract check, hit log. Alerts only; every attack stays manual.
 // @author       Oxain
 // @match        https://www.torn.com/*
@@ -22,7 +22,7 @@
 	/* ---------- pure core (exported for Node, no DOM) ---------- */
 
 	const Merc = {};
-	Merc.VERSION = '0.9.3';
+	Merc.VERSION = '0.9.4';
 	Merc.API = 'https://api.torn.com/v2';
 	Merc.FF_API = 'https://ffscouter.com/api/v1';
 	Merc.COMMENT = 'TornMerc';
@@ -119,6 +119,12 @@
 	 * FFScouter: FF = 1 + 8/3 x (their stats / mine); 2 = easy, 3.67 = equal, above that they out-stat me.
 	 * ff = FFScouter's fair_fight for me (0 = unknown). An unknown FF passes only when the limit is off.
 	 */
+	/** The bounty board lists nobody without a Fair Fight limit: on a fresh device (a phone with no FFScouter key yet) every target would look the same, and a stacked level 20 mauls. */
+	Merc.boardGateOn = function (ffKey, maxFf) {
+		return Boolean(String(ffKey || '').trim()) && Number(maxFf) > 0;
+	};
+	Merc.BOARD_GATE_TEXT = 'Bounty board is off until Fair Fight is set: paste your FFScouter key and a Max FF under Fair Fight. Without it every target looks the same and a stacked low level will maul you.';
+
 	Merc.ffGate = function (r, ff, maxFf) {
 		if (r.state !== 'hit' || !maxFf) return r;
 		if (!ff) return { ...r, state: 'no', why: 'FF unknown' };
@@ -592,7 +598,7 @@
 #tm-panel table{width:100%;border-collapse:collapse}#tm-panel td{padding:4px 3px;border-top:1px solid #333}
 #tm-panel a{color:#7db8f0}#tm-panel a.tm-hit{display:inline-block;padding:2px 8px;border-radius:4px;background:#a33;color:#fff;font-weight:bold;text-decoration:none}
 #tm-panel tr.tm-state-hit td{background:#23351f}#tm-panel tr.tm-state-soon td{background:#33301c}#tm-panel tr.tm-danger td{background:#4a1f1f}
-#tm-panel td.tm-group{padding-top:8px;color:#e6c35c;font-weight:bold;border-top:0}#tm-panel .tm-note{color:#999;font-size:11px;line-height:1.35}#tm-status{min-height:15px;margin:4px 0;color:#e6c35c}#tm-last{margin:4px 0;font-weight:bold}#tm-last:empty{display:none}
+#tm-panel td.tm-group{padding-top:8px;color:#e6c35c;font-weight:bold;border-top:0}#tm-panel .tm-note{color:#999;font-size:11px;line-height:1.35}#tm-panel .tm-warn{color:#ff9b8f;font-weight:bold}#tm-status{min-height:15px;margin:4px 0;color:#e6c35c}#tm-last{margin:4px 0;font-weight:bold}#tm-last:empty{display:none}
 #tm-panel .tm-log div{padding:3px 0;border-top:1px solid #333;font-size:11px;word-break:break-word}#tm-panel .tm-log div.tm-proof{color:#cfe8c5}
 #tm-bar{position:fixed;top:0;left:0;right:0;z-index:99997;padding:6px 10px;background:#1b1b1b;color:#eee;font:bold 13px Arial,sans-serif;border-bottom:2px solid #666;text-align:center}
 #tm-bar.tm-ok{border-color:#3c8c4a}#tm-bar.tm-bad{border-color:#c0392b;color:#ff9b8f}`;
@@ -717,7 +723,7 @@
 		if (!shown && typeof GM_notification === 'function') GM_notification({ title, text, timeout: 15000, onclick: go });
 		document.title = `(!) ${title}`;
 		lastEl.textContent = '';
-		if (url) lastEl.append(el('span', { textContent: `Last alert: ${title} ` }), el('a', { className: 'tm-hit', href: url, textContent: 'Attack' }));   // the in-page fallback when the toast click goes nowhere
+		if (url) lastEl.append(el('span', { textContent: `Last alert: ${title} ` }), el('a', { className: 'tm-hit', href: url, textContent: /user2ID=/.test(url) ? 'Attack' : 'Profile' }));   // the in-page fallback when the toast click goes nowhere
 	}
 
 	/* ---------- radar ---------- */
@@ -794,6 +800,7 @@
 		bountySkip = Merc.pruneSkip(bountySkip, nowSec);
 		const maxFf = ffKeyIn.value.trim() ? Number(maxFfIn.value) || 0 : 0;
 		fresh = Merc.pruneFresh(fresh, nowSec, Merc.FRESH_MAX_SEC);
+		if (!Merc.boardGateOn(ffKeyIn.value, maxFfIn.value)) { bountyWatches = []; problem = Merc.BOARD_GATE_TEXT; return; }
 		bountyWatches = Merc.bountyWatches(Merc.mergeFresh(bountyRaw.flat(), fresh), { myId, maxLevel: Number(bountyMaxLevel.value) || 0, minReward: Number(bountyMinReward.value) || 0, maxFf, stats, skip: bountySkip, now: nowSec });
 		if (bountyRaw.length >= Merc.boardPages(bountyTotal)) {   // the whole board is in: forget hunters of targets no longer on it
 			const pruned = Merc.pruneHunters(hunters, bountyRaw.flat().map((b) => Number(b.target_id)));
@@ -844,6 +851,7 @@
 				el('td', { textContent: r.bounty ? `${Merc.money(r.bounty.perHit)}${r.bounty.more ? ` +${Merc.money(r.bounty.more)}` : ''} · ${when}${r.hunters ? ` · hunted${r.hunters > 1 ? ` x${r.hunters}` : ''}` : ''}` : what }),
 				el('td', {}, el('a', { className: 'tm-hit', href: Merc.attackUrl(r.id), textContent: 'Attack' }), r.bounty ? el('button', { className: 'tm-x', textContent: '✓', title: 'Collected: hide until the board changes for them (24 h at most)', onclick: () => { bountySkip.set(r.id, { at: Math.floor(Date.now() / 1000), sig: r.bounty.sig }); save('bountySkip', [...bountySkip]); rebuildBounties(); } }) : '')));
 		}
+		if (bountyOn.checked && !Merc.boardGateOn(ffKeyIn.value, maxFfIn.value)) listEl.append(el('div', { className: 'tm-note tm-warn', textContent: Merc.BOARD_GATE_TEXT }));
 		if (body.childElementCount) listEl.append(el('table', {}, body));
 		else listEl.append(el('div', { className: 'tm-note', textContent: running ? 'Nobody to show yet.' : 'Add contracts, then start the radar.' }));
 	}
@@ -1003,7 +1011,7 @@
 			prevHits = new Set(sure.filter((r) => r.state === 'hit').map((r) => r.key));
 			const soon = Merc.newlySoon(sure, soonWarned, nowSec, Merc.SOON_WARN_SEC);   // the race is won by whoever is already on the attack page
 			soonWarned = soon.warned;
-			if (headsUpIn.checked) for (const r of soon.alerts) alertMe(`${Merc.money(r.bounty.perHit)} bounty: ${r.name} out in ${Merc.clock(r.until - nowSec)}`, `Level ${r.level}${r.ff ? ` · FF ${r.ff.toFixed(2)}` : ''}${r.hunter ? ` · last taken by ${r.hunter}` : ''} · click to sit on the attack page`, Merc.attackUrl(r.id));
+			if (headsUpIn.checked) for (const r of soon.alerts) alertMe(`${Merc.money(r.bounty.perHit)} bounty: ${r.name} out in ${Merc.clock(r.until - nowSec)}`, `Level ${r.level}${r.ff ? ` · FF ${r.ff.toFixed(2)}` : ''}${r.hunter ? ` · last taken by ${r.hunter}` : ''} · click to open their profile; hit Attack there when the timer ends`, Merc.profileUrl(r.id));   // an attack page opened while they are in hospital never refreshes
 			render(rows, nowSec);
 			updateBar(rows, nowSec);
 			if (Date.now() - warmAt > Merc.WARM_EVERY_MS) snapshot();

@@ -32,8 +32,10 @@ alerts only: you click Attack, Start Fight and every hit yourself.
   is out soonest, bigger bounty first within the same minute. A release is a race, so a coming
   release counts $ divided by one plus the different hunters the radar has seen take that target
   ("hunted x3"): an unhunted $500k outranks a $1m that three others camp. The top 120 are watched live; 30 s
-  before a release you get "$250k bounty: X out in 0:30" so you are already sitting on the attack
-  page, then "X is OUT" when the timer ends. Torn serves the board from a cache, so once a target is
+  before a release you get "$250k bounty: X out in 0:30", which opens their profile (an attack page
+  opened while they are in hospital never refreshes), then "X is OUT" when the timer ends, which
+  opens the attack page. The board lists nobody until an FFScouter key and a Max FF are set: on a
+  fresh device every target would look the same, and a stacked low level mauls. Torn serves the board from a cache, so once a target is
   within 5 minutes of release or out, the radar reads that player's own bounty list live and alerts
   only if the money is still there; a claimed bounty drops off the list minutes before the board
   notices. "Hunted" marks a target whose last hospital stay was

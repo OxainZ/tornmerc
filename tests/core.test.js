@@ -333,6 +333,16 @@ test('poolRows keeps out-of-hospital targets first, lowest level', () => {
 	assert.deepEqual(Merc.poolRows(null, NOW), []);
 });
 
+test('the bounty board lists nobody without an FFScouter key and a Max FF', () => {
+	assert.equal(Merc.boardGateOn('abc', 3), true);
+	assert.equal(Merc.boardGateOn('abc', '2.5'), true);
+	assert.equal(Merc.boardGateOn('', 3), false);
+	assert.equal(Merc.boardGateOn('  ', 3), false);
+	assert.equal(Merc.boardGateOn('abc', ''), false);
+	assert.equal(Merc.boardGateOn('abc', 0), false);
+	assert.match(Merc.BOARD_GATE_TEXT, /FFScouter key/);
+});
+
 test('ffGate turns a hit into DANGER above my Fair Fight limit', () => {
 	const hit = { state: 'hit', why: 'hit now', until: 0 };
 	assert.equal(Merc.ffGate(hit, 1.8, 3).state, 'hit');
