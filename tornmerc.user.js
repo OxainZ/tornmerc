@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Merc Radar
-// @version      0.5.0
+// @version      0.5.1
 // @description  Free merc radar: watches your contracts, Torn's bounty board and paid-hit factions through the Torn API and alerts you the moment a target can be hit. Fair Fight on every target (FFScouter), chain kit, attack-page contract check, hit log. Alerts only; every attack stays manual.
 // @author       Oxain
 // @match        https://www.torn.com/*
@@ -22,7 +22,7 @@
 	/* ---------- pure core (exported for Node, no DOM) ---------- */
 
 	const Merc = {};
-	Merc.VERSION = '0.5.0';
+	Merc.VERSION = '0.5.1';
 	Merc.API = 'https://api.torn.com/v2';
 	Merc.FF_API = 'https://ffscouter.com/api/v1';
 	Merc.COMMENT = 'TornMerc';
@@ -173,18 +173,18 @@
 	};
 
 	/**
-	 * What a bounty row is worth to ME right now, in $ per hit, so the list ranks by money not level.
-	 * total x (1 if hittable now; decays with the hospital wait, since every merc is racing for that moment)
-	 * x (FF ease: 1.0 at FF<=2, down to 0.5 at the limit) / hits needed (1 per bounty stacked, max 1 if they stack on one hosp).
-	 * Returns 0 for anything you cannot or should not hit.
+	 * What a bounty row is worth to ME right now: the soonest hit for the most cash.
+	 * Out and hittable = full value. In hospital = value x 1/(1 + wait/10min): half at 10 min, a fifth at 40,
+	 * because every merc on the board is racing for that release and a long wait is a long shot.
+	 * FF ease: 1.0 at FF<=2, down to 0.5 at my limit. Returns 0 for anything I cannot or should not hit.
 	 */
 	Merc.bountyScore = function (row, nowSec, maxFf) {
 		const b = row.bounty;
 		if (!b || row.state === 'no') return 0;
 		let when = 1;
 		if (row.state === 'soon') {
-			const wait = Math.max(0, (row.until || 0) - nowSec);
-			when = wait <= 120 ? 0.9 : wait <= 900 ? 0.6 : wait <= 3600 ? 0.3 : 0.1;
+			const waitMin = Math.max(0, (row.until || 0) - nowSec) / 60;
+			when = 1 / (1 + waitMin / 10);
 		}
 		let ease = 1;
 		if (maxFf && row.ff) ease = row.ff <= 2 ? 1 : Math.max(0.5, 1 - (row.ff - 2) / (2 * (maxFf - 2 || 1)));
@@ -558,7 +558,7 @@
 			body.append(el('tr', { className: `tm-state-${r.state}${/^DANGER/.test(r.why) ? ' tm-danger' : ''}` },
 				el('td', {}, el('a', { href: Merc.profileUrl(r.id), textContent: r.name, title: `${r.label}${r.bs ? ` · est. ${r.bs}` : ''}` })),
 				el('td', { textContent: r.ff ? `${r.level} · FF ${r.ff.toFixed(2)}` : String(r.level) }),
-				el('td', { textContent: r.bounty ? `${Merc.money(r.bounty.total)} · ${what}` : what }),
+				el('td', { textContent: r.bounty ? `${Merc.money(r.bounty.total)} · ${r.state === 'hit' ? 'OUT NOW' : r.state === 'soon' && left > 0 ? `out in ${Merc.clock(left)}` : r.why}` : what }),
 				el('td', {}, el('a', { className: 'tm-hit', href: Merc.attackUrl(r.id), textContent: 'Attack' }), r.bounty ? el('button', { className: 'tm-x', textContent: '✓', title: 'Collected: hide for 24 h', onclick: () => { bountySkip.set(r.id, Math.floor(Date.now() / 1000)); save('bountySkip', [...bountySkip]); rebuildBounties(); } }) : '')));
 		}
 		if (body.childElementCount) listEl.append(el('table', {}, body));

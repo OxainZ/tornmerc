@@ -79,21 +79,25 @@ test('bountyWatches stacks every bounty on a target and filters by me, level, re
 	assert.equal(Merc.bountyWatches([b(7, 5, 1, 1, 2)], { maxFf: 3, stats: new Map() }).length, 1, 'unknown FF is kept until stats arrive');
 });
 
-test('bountyScore ranks by money I can collect now', () => {
+test('bountyScore: soonest hit for the most cash', () => {
 	const row = (state, total, ff, until) => ({ state, bounty: { total }, ff, until });
 	assert.equal(Merc.bountyScore(row('hit', 100000, 1.2), NOW, 3), 100000);
 	assert.equal(Merc.bountyScore(row('hit', 100000, 3, 0), NOW, 3), 50000);
 	assert.equal(Merc.bountyScore(row('hit', 100000, 0), NOW, 3), 100000);
-	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 60), NOW, 3), 90000);
-	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 600), NOW, 3), 60000);
-	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 7200), NOW, 3), 10000);
+	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW), NOW, 3), 100000);
+	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 600), NOW, 3), 50000);
+	assert.equal(Merc.bountyScore(row('soon', 100000, 1, NOW + 2400), NOW, 3), 20000);
 	assert.equal(Merc.bountyScore(row('no', 100000, 1), NOW, 3), 0);
 	assert.equal(Merc.bountyScore({ state: 'hit' }, NOW, 3), 0);
+	// $300k out in 14 min beats $2m out in 20 min? No: 300k/2.4 = 125k vs 2m/3 = 667k. The big one wins.
+	assert.ok(Merc.bountyScore(row('soon', 2e6, 1, NOW + 1200), NOW, 3) > Merc.bountyScore(row('soon', 3e5, 1, NOW + 840), NOW, 3));
+	// but $300k out NOW beats $2m 2 hours away (2m/13 = 154k).
+	assert.ok(Merc.bountyScore(row('hit', 3e5, 1), NOW, 3) > Merc.bountyScore(row('soon', 2e6, 1, NOW + 7200), NOW, 3));
 });
 
 test('rankBounties puts the best money first and drops the dead', () => {
 	const rows = Merc.rankBounties([
-		{ key: 'a', state: 'soon', bounty: { total: 1e6 }, until: NOW + 7200 },
+		{ key: 'a', state: 'soon', bounty: { total: 1e6 }, until: NOW + 7200 },   // 1m / 13 = 77k
 		{ key: 'b', state: 'hit', bounty: { total: 200000 } },
 		{ key: 'c', state: 'no', bounty: { total: 9e9 } },
 	], NOW, 0);
