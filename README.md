@@ -12,7 +12,7 @@ alerts only: you click Attack, Start Fight and every hit yourself.
    https://raw.githubusercontent.com/OxainZ/tornmerc/main/tornmerc.user.js
    Updates arrive on their own from the same link.
 3. Reload torn.com and click **Merc** at the bottom left.
-4. Under **Settings**, paste a **Minimal** API key (Public works too, without the attack bar and chain timer).
+4. Under **Settings**, paste a **Limited** API key (Minimal loses the proof log; Public also loses the attack bar and chain timer).
 5. Under **Contracts**, add targets, then press **Start radar**.
 
 **TornPDA:** Settings > User scripts > add > Remote URL, paste the same link.
@@ -44,8 +44,14 @@ alerts only: you click Attack, Start Fight and every hit yourself.
 - **Attack-page bar:** on the attack screen, a bar shows your energy and life and whether *this*
   target still meets its terms, so you never make an illegal hit. For a bounty target it reads
   "HOSPITALIZE to claim $X": leaving or mugging pays nothing.
-- **Hit log:** each time a target clears its terms, one line is kept to paste as proof: who, when
-  (TCT), their status, activity and early-discharge state, and the terms.
+- **Hit log, with proof:** each time a target clears its terms, one line is kept: who, when (TCT),
+  their status, activity and early-discharge state, and the terms. With a **Limited** key, every
+  hit you make on a watched target is logged too, from your own attack list: result, time, Fair
+  Fight, the attack log link, the state they were in when they last cleared the terms, and the
+  terms. A bounty hit says whether it paid. Each line has a copy button; **Copy all** takes the
+  lot for a client. Contract rows also show the target's activity ("Idle 3m") at a glance.
+- **Claims tally:** a bounty hospitalisation ticks the row for you and the status line shows
+  "~$1.2m from 4 claims today".
 - **Fair Fight (optional):** with an FFScouter key, every target shows its Fair Fight against *you*,
   and anyone above the "Max FF for me" limit is marked DANGER instead of hit. Lowest level is not
   the same as weakest; this is what keeps a stacked low level from cooking you. FF 2 is easy,
@@ -81,9 +87,9 @@ Not included from paid radars: illegal-hit evidence images and device sync.
 |---|---|
 | Data storage | Settings and the hit log stay in this browser's script storage |
 | Data sharing | None. Torn requests go only to api.torn.com. With an FFScouter key set, that key, target ids and the pool filters go to ffscouter.com |
-| Purpose | Read player, faction, bounty and bar data for your own alerts |
+| Purpose | Read player, faction, bounty and bar data for your own alerts, and your own attack list for the proof log |
 | Key storage and sharing | Stored locally, never shared |
-| Key access level | Minimal (Public without the attack bar and chain timer) |
+| Key access level | Limited for the proof log and claims tally; Minimal for the attack bar and chain timer; Public for everything else |
 
 ## Licence
 

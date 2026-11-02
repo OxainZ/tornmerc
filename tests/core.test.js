@@ -328,6 +328,44 @@ test('chainAlert fires once per drop and re-arms when the timer refills', () => 
 test('game links only ever carry a number', () => {
 	assert.equal(Merc.attackUrl(123), 'https://www.torn.com/page.php?sid=attack&user2ID=123');
 	assert.ok(Merc.attackUrl('1&x=2').endsWith('user2ID=NaN'));
+	assert.equal(Merc.attackLogUrl('ab12&x'), 'https://www.torn.com/page.php?sid=attackLog&ID=ab12%26x');
+});
+
+test('myHits keeps only my own finished fights newer than the mark, oldest first', () => {
+	const a = (attacker, defender, ended, result, code, extra) => ({ attacker: attacker ? { id: attacker, name: `p${attacker}` } : null, defender: { id: defender, name: `p${defender}`, level: 10 }, ended, result, code, modifiers: { fair_fight: 1.5, overseas: 1 }, chain: 0, ...extra });
+	const hits = Merc.myHits({ attacks: [a(1, 5, 300, 'Hospitalized', 'c3'), a(1, 6, 200, 'Mugged', 'c2', { modifiers: { fair_fight: 2, overseas: 1.25 }, chain: 12 }), a(2, 1, 250, 'Hospitalized', 'x'), a(1, 7, 100, 'Lost', 'c1'), a(null, 1, 400, 'Lost', 'y')] }, 1, 100);
+	assert.deepEqual(hits.map((h) => [h.id, h.at, h.result, h.code, h.ff, h.abroad, h.chain]), [[6, 200, 'Mugged', 'c2', 2, true, 12], [5, 300, 'Hospitalized', 'c3', 1.5, false, 0]]);
+	assert.deepEqual(Merc.myHits(null, 1, 0), []);
+});
+
+test('hitLine is one proof line: result, time, FF, attack log, their state, the terms, and whether a bounty paid', () => {
+	const hit = { id: 5, name: 'Bob', level: 12, at: 3661, result: 'Hospitalized', code: 'abc', ff: 1.25, abroad: false, chain: 0 };
+	const snap = { player: { status: okay, last_action: seen('Idle', 180), has_early_discharge: false }, at: NOW };
+	const line = Merc.hitLine(hit, { id: 5, level: 12, watch: { rule: 'within:5', note: 'merc #12' } }, { ...snap, player: { ...snap.player, last_action: { status: 'Idle', timestamp: 3661 - 180 } } });
+	assert.equal(line.text, 'HIT Bob [5] lvl 12: Hospitalized 01:01:01 TCT, FF x1.25. Attack log: https://www.torn.com/page.php?sid=attackLog&ID=abc. They were: Okay, Idle 3m ago, no ED. Terms: Active in last 5 min (merc #12).');
+	assert.equal(line.claimed, false);
+	const paid = Merc.hitLine(hit, { id: 5, level: 12, bounty: { perHit: 250000 }, watch: { rule: 'any' } }, null);
+	assert.match(paid.text, /They were: state not seen\. Terms: bounty\. Bounty claimed, ~\$250k\.$/);
+	assert.equal(paid.claimed, true);
+	const mug = Merc.hitLine({ ...hit, result: 'Mugged', abroad: true, chain: 7 }, { id: 5, level: 12, bounty: { perHit: 250000 }, watch: {} }, null);
+	assert.match(mug.text, /Mugged 01:01:01 TCT, FF x1\.25, abroad, chain #7\./);
+	assert.match(mug.text, /Bounty NOT claimed: only a hospitalisation pays\.$/);
+	assert.equal(mug.claimed, false);
+});
+
+test('tally adds claims within a UTC day and resets on the next', () => {
+	const day1 = Date.UTC(2026, 10, 2, 23, 0) / 1000;
+	let e = Merc.tally({ day: '', total: 0, hits: 0 }, 250000, day1);
+	e = Merc.tally(e, 100000, day1 + 60);
+	assert.deepEqual(e, { day: '2026-11-02', total: 350000, hits: 2 });
+	assert.deepEqual(Merc.tally(e, 5000, day1 + 7200), { day: '2026-11-03', total: 5000, hits: 1 });
+});
+
+test('ago is short', () => {
+	assert.equal(Merc.ago(59), '0m');
+	assert.equal(Merc.ago(185), '3m');
+	assert.equal(Merc.ago(7500), '2h 5m');
+	assert.equal(Merc.ago(90000), '1d');
 });
 
 test('attackPageTarget reads the attack page and nothing else', () => {

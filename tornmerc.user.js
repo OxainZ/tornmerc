@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Merc Radar
-// @version      0.8.1
+// @version      0.9.0
 // @description  Free merc radar: watches your contracts, Torn's bounty board and paid-hit factions through the Torn API and alerts you the moment a target can be hit. Fair Fight on every target (FFScouter), chain kit, attack-page contract check, hit log. Alerts only; every attack stays manual.
 // @author       Oxain
 // @match        https://www.torn.com/*
@@ -22,7 +22,7 @@
 	/* ---------- pure core (exported for Node, no DOM) ---------- */
 
 	const Merc = {};
-	Merc.VERSION = '0.8.1';
+	Merc.VERSION = '0.9.0';
 	Merc.API = 'https://api.torn.com/v2';
 	Merc.FF_API = 'https://ffscouter.com/api/v1';
 	Merc.COMMENT = 'TornMerc';
@@ -421,6 +421,52 @@
 		return { at: nowSec, id: row.id, name: row.name, level: row.level, text: `${row.name} [${row.id}] lvl ${row.level} cleared ${Merc.tct(nowSec)} TCT: ${(player && player.status && player.status.description) || 'Okay'}, ${la.status || 'activity unknown'}${idle === null ? '' : ` ${idle}m ago`}, ${ed}. Terms: ${terms}${watch && watch.note ? ` (${watch.note})` : ''}` };
 	};
 
+	/** The state a target was in, as words: status, activity, early discharge. `snap` = {player, at} from the last poll that cleared them. */
+	Merc.stateWords = function (snap, atSec) {
+		const p = snap && snap.player;
+		if (!p) return 'state not seen';
+		const la = p.last_action || {};
+		const idle = la.timestamp ? Math.floor((atSec - la.timestamp) / 60) : null;
+		const ed = p.has_early_discharge === undefined ? 'ED unknown' : p.has_early_discharge ? 'HAS ED' : 'no ED';
+		return `${(p.status && p.status.description) || 'Okay'}, ${la.status || 'activity unknown'}${idle === null || idle < 0 ? '' : ` ${idle}m ago`}, ${ed}`;
+	};
+
+	/** Torn's attack log for one fight, the link a merc pastes as proof. */
+	Merc.attackLogUrl = function (code) { return `https://www.torn.com/page.php?sid=attackLog&ID=${encodeURIComponent(String(code || ''))}`; };
+
+	/** My own finished attacks newer than `sinceSec`, oldest first: {id, name, level, at, result, code, ff, abroad, chain}. */
+	Merc.myHits = function (json, myId, sinceSec) {
+		const out = [];
+		for (const a of (json && json.attacks) || []) {
+			if (!a || !a.attacker || Number(a.attacker.id) !== Number(myId)) continue;
+			const at = Number(a.ended) || 0;
+			if (at <= (Number(sinceSec) || 0)) continue;
+			const d = a.defender || {};
+			const m = a.modifiers || {};
+			out.push({ id: Number(d.id) || 0, name: String(d.name || d.id || '?'), level: Number(d.level) || 0, at, result: String(a.result || ''), code: String(a.code || ''), ff: Number(m.fair_fight) || 0, abroad: Number(m.overseas) > 1, chain: Number(a.chain) || 0 });
+		}
+		return out.sort((a, b) => a.at - b.at);
+	};
+
+	/**
+	 * One proof line for a hit I made on a watched target: result, time, FF, the attack log link, the state they
+	 * were in when they last cleared the terms, and the terms. A bounty row says whether the hit paid.
+	 */
+	Merc.hitLine = function (hit, row, snap) {
+		const w = (row && row.watch) || {};
+		const terms = row && row.bounty ? 'bounty' : (Merc.RULES.find(([v]) => v === w.rule) || ['', 'any'])[1];
+		const claim = row && row.bounty ? (hit.result === 'Hospitalized' ? ` Bounty claimed, ~${Merc.money(row.bounty.perHit)}.` : ' Bounty NOT claimed: only a hospitalisation pays.') : '';
+		const text = `HIT ${hit.name} [${hit.id}] lvl ${hit.level || (row && row.level) || '?'}: ${hit.result || 'result unknown'} ${Merc.tct(hit.at)} TCT, FF x${hit.ff.toFixed(2)}${hit.abroad ? ', abroad' : ''}${hit.chain ? `, chain #${hit.chain}` : ''}. Attack log: ${Merc.attackLogUrl(hit.code)}. They were: ${Merc.stateWords(snap, hit.at)}. Terms: ${terms}${w.note ? ` (${w.note})` : ''}.${claim}`;
+		return { at: hit.at, id: hit.id, name: hit.name, level: hit.level, code: hit.code, result: hit.result, claimed: Boolean(row && row.bounty && hit.result === 'Hospitalized'), text };
+	};
+
+	/** Today's claims tally (UTC day): adds `cash` and resets on a new day. */
+	Merc.tally = function (earned, cash, atSec) {
+		const day = new Date(atSec * 1000).toISOString().slice(0, 10);
+		const e = earned && earned.day === day ? earned : { day, total: 0, hits: 0 };
+		return { day, total: e.total + (Number(cash) || 0), hits: e.hits + 1 };
+	};
+
 	Merc.tct = function (sec) {
 		const d = new Date(sec * 1000);
 		return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')}`;
@@ -429,6 +475,14 @@
 	Merc.clock = function (seconds) {
 		const s = Math.max(0, Math.floor(seconds));
 		return s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+	};
+
+	/** "3m", "2h 5m", "3d": how long ago, in the shortest words. */
+	Merc.ago = function (seconds) {
+		const s = Math.max(0, Math.floor(seconds));
+		if (s >= 86400) return `${Math.floor(s / 86400)}d`;
+		if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
+		return `${Math.floor(s / 60)}m`;
 	};
 
 	/** Display order: hittable, then nearest release, then lowest level. */
@@ -494,7 +548,7 @@
 #tm-panel a{color:#7db8f0}#tm-panel a.tm-hit{display:inline-block;padding:2px 8px;border-radius:4px;background:#a33;color:#fff;font-weight:bold;text-decoration:none}
 #tm-panel tr.tm-state-hit td{background:#23351f}#tm-panel tr.tm-state-soon td{background:#33301c}#tm-panel tr.tm-danger td{background:#4a1f1f}
 #tm-panel td.tm-group{padding-top:8px;color:#e6c35c;font-weight:bold;border-top:0}#tm-panel .tm-note{color:#999;font-size:11px;line-height:1.35}#tm-status{min-height:15px;margin:4px 0;color:#e6c35c}#tm-last{margin:4px 0;font-weight:bold}#tm-last:empty{display:none}
-#tm-panel .tm-log div{padding:3px 0;border-top:1px solid #333;font-size:11px;word-break:break-word}
+#tm-panel .tm-log div{padding:3px 0;border-top:1px solid #333;font-size:11px;word-break:break-word}#tm-panel .tm-log div.tm-proof{color:#cfe8c5}
 #tm-bar{position:fixed;top:0;left:0;right:0;z-index:99997;padding:6px 10px;background:#1b1b1b;color:#eee;font:bold 13px Arial,sans-serif;border-bottom:2px solid #666;text-align:center}
 #tm-bar.tm-ok{border-color:#3c8c4a}#tm-bar.tm-bad{border-color:#c0392b;color:#ff9b8f}`;
 	document.head.appendChild(css);
@@ -519,6 +573,11 @@
 	let bountySkip = new Map(load('bountySkip', []));   // id -> {at, sig}: ticked as collected
 	let poolRows = [];
 	let hitLog = load('log', []);
+	let attackAt = load('attackAt', 0);   // the newest of my attacks already logged, so each hit is logged once
+	let earned = load('earned', { day: '', total: 0, hits: 0 });
+	let attacksOk = true;                 // false once /user/attacks says the key is below Limited
+	const lastHittable = new Map();       // player id -> {player, at}: the last poll that cleared them, for the proof line
+	let lastRows = [];
 
 	const keyIn = el('input', { type: 'password', autocomplete: 'off', placeholder: 'Minimal-access key (Public works without the attack bar)', value: load('key', '') });
 	const typeIn = el('select', {}, el('option', { value: 'player', textContent: 'Contract target' }), el('option', { value: 'faction', textContent: 'Paid hits on a faction' }));
@@ -567,10 +626,10 @@
 			el('label', {}, poolOn, ' Target pool: inactive players under a FF limit (needs the FFScouter key)'),
 			el('div', { className: 'tm-two' }, field('Pool max FF', poolMaxFf), field('Pool max level', poolMaxLevel)),
 			el('div', { className: 'tm-note', textContent: 'The pool is refreshed every 5 minutes, out-of-hospital first, lowest level first. For when you are hired to chain or chain-save: every row is a one-click attack page, nothing more.' })),
-		el('details', {}, el('summary', { textContent: 'Hit log' }), clearLogBtn, logEl),
+		el('details', {}, el('summary', { textContent: 'Hit log' }), clearLogBtn, el('button', { textContent: 'Copy all', onclick: () => copyText(hitLog.map((e) => e.text).join('\n')) }), logEl),
 		el('details', {}, el('summary', { textContent: 'Settings' }),
 			field('Torn API key', keyIn),
-			el('div', { className: 'tm-note', textContent: 'Minimal access shows your energy and life on the attack page and your chain timer; Public does everything else. Stored only in this browser\'s script storage and sent only to api.torn.com. Nothing is shared with anyone. Used only to read player, faction, bounty and bar data for your own alerts.' }),
+			el('div', { className: 'tm-note', textContent: 'Limited access adds the proof log (every hit you make on a watched target, with its attack log link) and the claims tally; Minimal shows your energy and life on the attack page and your chain timer; Public does everything else. Stored only in this browser\'s script storage and sent only to api.torn.com. Nothing is shared with anyone. Used only to read player, faction, bounty and bar data for your own alerts.' }),
 			el('label', {}, soundIn, ' Sound on alerts'), field('Alert volume', volumeIn)));
 	const toggle = el('button', { id: 'tm-btn', textContent: 'Merc', onclick: () => { panel.hidden = !panel.hidden; } });
 	document.body.append(toggle, panel);
@@ -687,7 +746,9 @@
 			const g = r.bounty ? `Bounties (${bountyRows.length} of ${bountyRaw.flat().length} on the board, under FF ${Number(maxFfIn.value) || 'off'}) · $ per hit` : r.key.startsWith('pool') ? 'Chain pool' : 'Contracts';
 			if (g !== group) { group = g; body.append(el('tr', {}, el('td', { colSpan: 4, className: 'tm-group', textContent: g }))); }
 			const left = r.until - nowSec;
-			const what = r.state === 'soon' && left > 0 ? `${r.why} ${Merc.clock(left)}` : r.why;
+			const la = (r.player && r.player.last_action) || {};
+			const seen = la.status ? ` · ${la.status}${la.timestamp && nowSec - la.timestamp >= 60 ? ` ${Merc.ago(nowSec - la.timestamp)}` : ''}` : '';   // a contract merc reads the terms at a glance
+			const what = (r.state === 'soon' && left > 0 ? `${r.why} ${Merc.clock(left)}` : r.why) + seen;
 			const when = r.state === 'hit' ? `OUT NOW${r.outFor >= 60 ? ` ${Math.floor(r.outFor / 60)}m` : ''}` : r.state === 'soon' && left > 0 ? `out in ${Merc.clock(left)}` : r.why;
 			const exp = r.bounty && r.bounty.expires > nowSec ? ` · exp ${Merc.clock(r.bounty.expires - nowSec)}` : '';
 			body.append(el('tr', { className: `tm-state-${r.state}${/^DANGER/.test(r.why) ? ' tm-danger' : ''}` },
@@ -708,10 +769,11 @@
 		for (const f of factions) manageEl.append(line(`Faction ${f.id}: ${ruleName(f.rule)}${f.noED ? ', no ED' : ''}`, () => { factions = factions.filter((x) => x !== f); save('factions', factions); members.delete(f.id); renderManage(); }));
 	}
 
+	function copyText(text) { try { navigator.clipboard.writeText(text).then(() => say('Copied.'), () => say('Copy blocked by the browser; select the line instead.')); } catch (e) { say('Copy blocked by the browser; select the line instead.'); } }
 	function renderLog() {
 		logEl.textContent = '';
-		for (const e of hitLog.slice().reverse()) logEl.append(el('div', { textContent: e.text }));
-		if (!hitLog.length) logEl.append(el('div', { className: 'tm-note', textContent: 'Each time a target clears its terms, a line lands here to paste as proof.' }));
+		for (const e of hitLog.slice().reverse()) logEl.append(el('div', { className: e.code ? 'tm-proof' : '' }, el('button', { className: 'tm-x', textContent: '⧉', title: 'Copy this line', onclick: () => copyText(e.text) }), ' ', e.text));
+		if (!hitLog.length) logEl.append(el('div', { className: 'tm-note', textContent: 'Each time a target clears its terms, a line lands here. With a Limited key every hit you make on a watched target lands here too, with the attack log link, as proof.' }));
 	}
 
 	function absorb(src, json) {
@@ -727,6 +789,29 @@
 				chainArmed = c.armed;
 				if (c.alert) alertMe('Chain timer low', `${json.bars.chain.current} chain · ${Merc.clock(json.bars.chain.timeout)} left`, null);
 			}
+			return [];
+		}
+		if (src.key === 'attacks') {
+			const nowSec = Math.floor(Date.now() / 1000);
+			if (!attackAt) { attackAt = nowSec; save('attackAt', attackAt); return []; }   // first read: old fights are not proof of anything
+			let changed = false;
+			for (const h of Merc.myHits(json, myId, attackAt)) {
+				attackAt = Math.max(attackAt, h.at);
+				const row = lastRows.find((r) => r.id === h.id);
+				if (!row) continue;   // a fight with someone off the radar is not logged
+				const line = Merc.hitLine(h, row, lastHittable.get(h.id));
+				hitLog = hitLog.concat(line).slice(-Merc.LOG_MAX);
+				changed = true;
+				if (line.claimed) {
+					earned = Merc.tally(earned, row.bounty.perHit, h.at);
+					save('earned', earned);
+					bountySkip.set(h.id, { at: h.at, sig: row.bounty.sig });   // collected: off the list until the board changes for them
+					save('bountySkip', [...bountySkip]);
+					rebuildBounties();
+				}
+			}
+			save('attackAt', attackAt);
+			if (changed) { save('log', hitLog); renderLog(); }
 			return [];
 		}
 		if (src.key.startsWith('bounties')) {
@@ -787,6 +872,7 @@
 			if (!holdLock(now)) { say('Radar is running in another Torn tab.'); return; }
 			const sources = [{ key: 'me', path: '/user/profile' }];   // profile, not basic: it carries my faction id, so faction mates are never listed
 			if (barsOk) sources.push({ key: 'bars', path: '/user/bars' });
+			if (attacksOk && myId) sources.push({ key: 'attacks', path: '/user/attacks?limit=25&sort=DESC&filters=outgoing' });   // my own fights, for the proof log; Limited key
 			if (bountyOn.checked) for (let i = 0; i < Merc.boardPages(bountyTotal); i++) sources.push({ key: `bounties${i}`, path: `/torn/bounties?limit=${Merc.BOUNTY_PAGE}&offset=${i * Merc.BOUNTY_PAGE}` });
 			sources.push(...Merc.sources(allWatches(), factions));
 			const src = Merc.nextDue(sources, dueAt, now, budget.remaining(now), period);
@@ -796,11 +882,12 @@
 				const json = await getJson(Merc.url(src.path, keyIn.value.trim(), Math.floor(now / 1000)));
 				const err = Merc.apiError(json);
 				if (err && src.key === 'bars' && err.code === 16) { barsOk = false; problem = 'Attack bar needs a Minimal key'; }
+				else if (err && src.key === 'attacks' && err.code === 16) { attacksOk = false; problem = 'Hit proof needs a Limited key'; }
 				else if (err && err.fatal) { stop(err.text); return; }
 				else if (err) problem = `${src.key}: ${err.text}`;
 				else {
 					const seen = absorb(src, json);
-					const fixed = src.key === 'me' ? 60 : src.key === 'bars' ? (chainOn.checked ? 15 : 30) : src.key.startsWith('bounties') ? Merc.boardPeriod(Merc.boardPages(bountyTotal)) : Merc.pollSeconds(seen, Math.floor(now / 1000));
+					const fixed = src.key === 'me' || src.key === 'attacks' ? 60 : src.key === 'bars' ? (chainOn.checked ? 15 : 30) : src.key.startsWith('bounties') ? Merc.boardPeriod(Merc.boardPages(bountyTotal)) : Merc.pollSeconds(seen, Math.floor(now / 1000));
 					period[src.key] = fixed * 1000;
 					dueAt[src.key] = now + fixed * 1000;
 				}
@@ -810,6 +897,8 @@
 			if (bountyOn.checked) rebuildBounties();   // FF may have just arrived; re-filter the board
 			const nowSec = Math.floor(Date.now() / 1000);
 			const rows = buildRows(nowSec);
+			lastRows = rows;
+			for (const r of rows) if (r.state === 'hit' && r.player) lastHittable.set(r.id, { player: r.player, at: nowSec });
 			for (const r of Merc.newlyHit(rows, prevHits)) {
 				alertMe(r.bounty ? `${Merc.money(r.bounty.perHit)} bounty: ${r.name} is OUT` : `${r.name} can be hit`, `Level ${r.level}${r.ff ? ` · FF ${r.ff.toFixed(2)}` : ''} · ${r.label}${r.bounty ? ' · hospitalize to claim' : ''} · click to open the attack page`, Merc.attackUrl(r.id));
 				hitLog = hitLog.concat(Merc.logEntry(r, r.player, r.watch, nowSec)).slice(-Merc.LOG_MAX);
@@ -825,7 +914,7 @@
 			const n = watches.length + factions.length;
 			const nb = bountyOn.checked ? ` · ${bountyWatches.length} bounties (${bountyRaw.flat().length} of ${bountyTotal || '?'} on board)` : '';
 			const hits = Merc.hitsAffordable(myBars);
-			say(`Watching ${n} contract${n === 1 ? '' : 's'}${nb}${ffKeyIn.value.trim() ? ` · FF max ${Number(maxFfIn.value) || 'off'}` : ''}${poolOn.checked ? ` · pool ${poolRows.length}` : ''}${hits === null ? '' : ` · energy for ${hits} hit${hits === 1 ? '' : 's'}`} · ${Merc.BUDGET_PER_MIN - budget.remaining(Date.now())}/${Merc.BUDGET_PER_MIN} calls a minute${problem ? ` · ${problem}` : ''}`);
+			say(`Watching ${n} contract${n === 1 ? '' : 's'}${nb}${ffKeyIn.value.trim() ? ` · FF max ${Number(maxFfIn.value) || 'off'}` : ''}${poolOn.checked ? ` · pool ${poolRows.length}` : ''}${hits === null ? '' : ` · energy for ${hits} hit${hits === 1 ? '' : 's'}`}${earned.hits && earned.day === new Date().toISOString().slice(0, 10) ? ` · ~${Merc.money(earned.total)} from ${earned.hits} claim${earned.hits === 1 ? '' : 's'} today` : ''} · ${Merc.BUDGET_PER_MIN - budget.remaining(Date.now())}/${Merc.BUDGET_PER_MIN} calls a minute${problem ? ` · ${problem}` : ''}`);
 		} catch (e) {
 			say(`Radar error: ${e.message}. Retrying.`);
 		} finally {

@@ -13,6 +13,10 @@ tornmerc is Oxain's standalone, free Torn City merc radar: one Tampermonkey user
   stacked pile on later hits, after the target leaves hospital again, and a quantity-N bounty is N
   claims. Rank and alert on `bounty.perHit`, never on the stacked total; bounties expire
   (`valid_until`). The attack page is `page.php?sid=attack` (Torn retired `loader.php`).
+- **Proof is the attack list, not a claim.** `/user/attacks` (Limited key, optional, outgoing only)
+  feeds the hit log with every fight on a watched target and its attack log link; a bounty
+  hospitalisation ticks the row and adds to the day's tally. Old fights before the first read are
+  never logged.
 - **Lowest level is not weakest.** The FF gate (`Merc.ffGate`) exists because a stacked low level
   will cook the merc; never rank or alert on level alone when FF is available.
 - **API only.** Never request torn.com pages. `@connect` is `api.torn.com` plus `ffscouter.com`
