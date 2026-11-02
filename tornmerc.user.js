@@ -6,6 +6,8 @@
 // @match        https://www.torn.com/*
 // @run-at       document-idle
 // @noframes
+// @downloadURL  https://raw.githubusercontent.com/OxainZ/tornmerc/main/tornmerc.user.js
+// @updateURL    https://raw.githubusercontent.com/OxainZ/tornmerc/main/tornmerc.meta.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest

@@ -6,11 +6,15 @@ alerts only: you click Attack, Start Fight and every hit yourself.
 
 ## Install
 
-1. Install Tampermonkey (Firefox or Chrome), or use TornPDA's user scripts on a phone.
-2. Add `tornmerc.user.js` as a new script.
+1. Install Tampermonkey (Firefox or Chrome).
+2. Open the install link and click **Install**:
+   https://raw.githubusercontent.com/OxainZ/tornmerc/main/tornmerc.user.js
+   Updates arrive on their own from the same link.
 3. Reload torn.com and click **Merc** at the bottom left.
-4. Under **Settings**, paste a **Minimal** API key (Public works too, without the attack bar).
+4. Under **Settings**, paste a **Minimal** API key (Public works too, without the attack bar and chain timer).
 5. Under **Contracts**, add targets, then press **Start radar**.
+
+**TornPDA:** Settings > User scripts > add > Remote URL, paste the same link.
 
 ## What it does
 
