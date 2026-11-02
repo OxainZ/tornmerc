@@ -62,25 +62,48 @@ test('evaluate lets an unknown location through when mine is unknown', () => {
 	assert.equal(Merc.evaluate({ status: okay }, { rule: 'any' }, null, NOW).state, 'hit');
 });
 
-test('bountyWatches stacks every bounty on a target and filters by me, level, reward, FF and blacklist', () => {
+test('evaluate never clears a member of my own faction', () => {
+	assert.equal(Merc.evaluate({ status: okay, faction_id: 42 }, { rule: 'any' }, 'Torn', NOW, 42).why, 'own faction');
+	assert.equal(Merc.evaluate({ status: okay, faction_id: 43 }, { rule: 'any' }, 'Torn', NOW, 42).state, 'hit');
+	assert.equal(Merc.evaluate({ status: okay, faction_id: null }, { rule: 'any' }, 'Torn', NOW, 42).state, 'hit');
+	assert.equal(Merc.evaluate({ status: okay, faction_id: 42 }, { rule: 'any' }, 'Torn', NOW, 0).state, 'hit');
+});
+
+test('bountyWatches stacks every bounty on a target and filters by me, level, reward, FF, expiry and the collected list', () => {
 	const b = (target_id, target_level, reward, quantity, lister_id, valid_until) => ({ target_id, target_name: `t${target_id}`, target_level, reward, quantity, lister_id, lister_name: lister_id ? `l${lister_id}` : null, valid_until: valid_until || 0 });
 	const stats = new Map([[4, { ff: 5 }], [2, { ff: 1.5 }]]);
 	const list = Merc.bountyWatches([
-		b(1, 50, 1e6, 1, 7), b(2, 10, 100000, 2, 7, 500), b(2, 10, 50000, 1, 8, 900), b(3, 5, 1000, 1, 7), b(4, 8, 500000, 1, 7), b(5, 9, 400000, 1, 7), b(99, 1, 1e9, 1, 7), b(6, 3, 1e6, 1, 99),
-	], { myId: 99, maxLevel: 40, minReward: 20000, maxFf: 3, stats, skip: new Set([5]), max: 10 });
+		b(1, 50, 1e6, 1, 7), b(2, 10, 100000, 2, 7, NOW + 500), b(2, 10, 50000, 1, 8, NOW + 900), b(3, 5, 1000, 1, 7), b(4, 8, 500000, 1, 7), b(5, 9, 400000, 1, 7), b(99, 1, 1e9, 1, 7), b(6, 3, 1e6, 1, 99), b(8, 3, 2e6, 1, 7, NOW - 1),
+	], { myId: 99, maxLevel: 40, minReward: 20000, maxFf: 3, stats, skip: new Map([[5, { at: NOW, sig: '400000:1' }]]), max: 10, now: NOW });
 	assert.deepEqual(list.map((w) => w.id), [2]);
+	assert.equal(list[0].bounty.perHit, 100000, 'one hospitalisation pays the highest bounty on the target');
 	assert.equal(list[0].bounty.total, 250000);
+	assert.equal(list[0].bounty.more, 150000);
+	assert.equal(list[0].bounty.hits, 3);
 	assert.equal(list[0].bounty.count, 2);
-	assert.equal(list[0].bounty.quantity, 3);
-	assert.equal(list[0].bounty.expires, 900);
+	assert.equal(list[0].bounty.lister, 'l7');
+	assert.equal(list[0].bounty.expires, NOW + 900);
+	assert.equal(list[0].bounty.sig, '100000:3');
 	assert.equal(list[0].rule, 'any');
 	const byMoney = Merc.bountyWatches([b(1, 5, 1, 1, 2), b(2, 3, 9, 1, 2)], { max: 1 });
 	assert.equal(byMoney[0].id, 2);
+	const perHit = Merc.bountyWatches([b(1, 5, 300000, 1, 2), b(2, 3, 100000, 5, 2)], {});
+	assert.deepEqual(perHit.map((w) => w.id), [1, 2], 'a $300k bounty beats five $100k ones: the pile is paid one hit at a time');
+	assert.equal(Merc.bountyWatches([b(2, 3, 100000, 5, 2)], { minReward: 200000 }).length, 0, 'the reward floor is per hit');
+	assert.equal(Merc.bountyWatches([b(5, 9, 400000, 1, 7)], { skip: new Map([[5, { at: NOW, sig: '400000:2' }]]) }).length, 1, 'a changed pile brings a collected target back');
 	assert.equal(Merc.bountyWatches([b(7, 5, 1, 1, 2)], { maxFf: 3, stats: new Map() }).length, 1, 'unknown FF is kept until stats arrive');
 });
 
-test('bountyKey: out now first, then by the minute of release', () => {
-	const row = (state, total, until) => ({ state, bounty: { total }, until });
+test('boardPages reads the whole board, at least one page, at most the cap', () => {
+	assert.equal(Merc.boardPages(0), 1);
+	assert.equal(Merc.boardPages(100), 1);
+	assert.equal(Merc.boardPages(101), 2);
+	assert.equal(Merc.boardPages(437), 5);
+	assert.equal(Merc.boardPages(99999), Merc.BOUNTY_MAX_PAGES);
+});
+
+test('bountyKey: out now first, then by the minute of release, cash per hit', () => {
+	const row = (state, perHit, until) => ({ state, bounty: { perHit, total: perHit * 3 }, until });
 	assert.deepEqual(Merc.bountyKey(row('hit', 100000), NOW), { bucket: 0, cash: 100000 });
 	assert.deepEqual(Merc.bountyKey(row('soon', 100000, NOW + 30), NOW), { bucket: 1, cash: 100000 });
 	assert.deepEqual(Merc.bountyKey(row('soon', 100000, NOW + 600), NOW), { bucket: 11, cash: 100000 });
@@ -90,19 +113,60 @@ test('bountyKey: out now first, then by the minute of release', () => {
 
 test('rankBounties: soonest out wins, cash breaks the tie, out-now on top', () => {
 	const rows = Merc.rankBounties([
-		{ key: 'mark', state: 'soon', bounty: { total: 2e6 }, until: NOW + 600, level: 43 },
-		{ key: 'small', state: 'soon', bounty: { total: 50000 }, until: NOW + 120, level: 9 },
-		{ key: 'now', state: 'hit', bounty: { total: 10000 }, level: 5 },
-		{ key: 'now2', state: 'hit', bounty: { total: 300000 }, level: 30 },
-		{ key: 'same', state: 'soon', bounty: { total: 90000 }, until: NOW + 125, level: 20 },
-		{ key: 'dead', state: 'no', bounty: { total: 9e9 } },
+		{ key: 'mark', state: 'soon', bounty: { perHit: 2e6 }, until: NOW + 600, level: 43 },
+		{ key: 'small', state: 'soon', bounty: { perHit: 50000 }, until: NOW + 120, level: 9 },
+		{ key: 'now', state: 'hit', bounty: { perHit: 10000 }, level: 5 },
+		{ key: 'now2', state: 'hit', bounty: { perHit: 300000 }, level: 30 },
+		{ key: 'same', state: 'soon', bounty: { perHit: 90000 }, until: NOW + 125, level: 20 },
+		{ key: 'dead', state: 'no', bounty: { perHit: 9e9 } },
 	], NOW);
 	assert.deepEqual(rows.map((r) => r.key), ['now2', 'now', 'same', 'small', 'mark']);
 });
 
-test('pruneSkip forgets collected bounties after the window', () => {
-	const m = Merc.pruneSkip(new Map([[1, NOW - 10], [2, NOW - Merc.BOUNTY_BLACKLIST_H * 3600 - 1]]), NOW);
+test('pruneSkip forgets collected bounties after the window and drops the old number-only format', () => {
+	const m = Merc.pruneSkip(new Map([[1, { at: NOW - 10, sig: 'a' }], [2, { at: NOW - Merc.BOUNTY_BLACKLIST_H * 3600 - 1, sig: 'b' }], [3, NOW]]), NOW);
 	assert.deepEqual([...m.keys()], [1]);
+});
+
+test('hospitalizedBy names the last hunter, tags stripped, and nothing for a self-hosp', () => {
+	assert.equal(Merc.hospitalizedBy({ details: 'Hospitalized by Bob' }), 'Bob');
+	assert.equal(Merc.hospitalizedBy({ details: 'Hospitalised by <a href="/x">Bob</a>.' }), 'Bob');
+	assert.equal(Merc.hospitalizedBy({ details: 'Overdosed on Xanax' }), '');
+	assert.equal(Merc.hospitalizedBy({ details: null }), '');
+	assert.equal(Merc.hospitalizedBy(null), '');
+});
+
+test('trackOut remembers when a target first came out and forgets once they are not', () => {
+	const m = new Map();
+	Merc.trackOut(m, 1, okay, NOW);
+	Merc.trackOut(m, 1, okay, NOW + 50);
+	assert.equal(m.get(1), NOW);
+	Merc.trackOut(m, 1, hospital(NOW + 99), NOW + 60);
+	assert.equal(m.has(1), false);
+	Merc.trackOut(m, 2, abroad('Japan'), NOW);
+	assert.equal(m.get(2), NOW);
+});
+
+test('hitsAffordable counts 25-energy hits', () => {
+	assert.equal(Merc.hitsAffordable({ energy: { current: 130, maximum: 150 } }), 5);
+	assert.equal(Merc.hitsAffordable({ energy: { current: 0 } }), 0);
+	assert.equal(Merc.hitsAffordable(null), null);
+});
+
+test('newlySoon warns once per release, bounty rows only, inside the lead', () => {
+	const rows = [
+		{ key: 'a', state: 'soon', bounty: { perHit: 1 }, until: NOW + 20 },
+		{ key: 'b', state: 'soon', bounty: { perHit: 1 }, until: NOW + 31 },
+		{ key: 'c', state: 'soon', until: NOW + 10 },
+		{ key: 'd', state: 'hit', bounty: { perHit: 1 }, until: 0 },
+		{ key: 'e', state: 'soon', bounty: { perHit: 1 }, until: NOW - 1 },
+	];
+	const first = Merc.newlySoon(rows, new Set(), NOW, 30);
+	assert.deepEqual(first.alerts.map((r) => r.key), ['a']);
+	assert.deepEqual([...first.warned], ['a']);
+	const again = Merc.newlySoon(rows, first.warned, NOW + 5, 30);
+	assert.deepEqual(again.alerts.map((r) => r.key), ['b'], 'a is not warned twice; b has just come inside the lead');
+	assert.deepEqual(Merc.newlySoon(rows, new Set(['a']), NOW + 100, 30).warned.size, 0, 'the warning re-arms once the row is no longer about to release');
 });
 
 test('money is short', () => {
@@ -120,19 +184,27 @@ test('sources dedupes and reads a no-ED target through its faction', () => {
 	assert.equal(list[1].path, '/user/1/profile');
 });
 
-test('pollSeconds speeds up near a hospital release', () => {
+test('pollSeconds speeds up near a hospital release and rests on a long stay', () => {
 	assert.equal(Merc.pollSeconds([{ status: hospital(NOW + 30) }], NOW), 2);
 	assert.equal(Merc.pollSeconds([{ status: hospital(NOW + 200) }], NOW), 15);
-	assert.equal(Merc.pollSeconds([{ status: hospital(NOW + 9000) }], NOW), 60);
+	assert.equal(Merc.pollSeconds([{ status: hospital(NOW + 1500) }], NOW), 60);
+	assert.equal(Merc.pollSeconds([{ status: hospital(NOW + 9000) }], NOW), 300);
+	assert.equal(Merc.pollSeconds([{ status: { state: 'Jail', until: NOW + 9000 } }], NOW), 300);
 	assert.equal(Merc.pollSeconds([{ status: okay }], NOW), 30);
+	assert.equal(Merc.pollSeconds([{ status: abroad('Japan') }], NOW), 30);
+	assert.equal(Merc.pollSeconds([{ status: { state: 'Traveling', until: null } }], NOW), 120);
+	assert.equal(Merc.pollSeconds([{ status: { state: 'Federal', until: null } }], NOW), 60);
+	assert.equal(Merc.pollSeconds([{ status: hospital(NOW + 9000) }, { status: okay }], NOW), 30, 'a faction list polls at its fastest member');
 	assert.equal(Merc.pollSeconds([], NOW), 60);
 });
 
-test('nextDue takes the most overdue source and respects the budget', () => {
+test('nextDue takes the source most overdue for its own period and respects the budget', () => {
 	const s = [{ key: 'a' }, { key: 'b' }, { key: 'c' }];
 	assert.equal(Merc.nextDue(s, { a: 50, b: 10, c: 500 }, 100, 5).key, 'b');
 	assert.equal(Merc.nextDue(s, { a: 500, b: 500, c: 500 }, 100, 5), null);
 	assert.equal(Merc.nextDue(s, {}, 100, 0), null);
+	assert.equal(Merc.nextDue(s, { a: 96000, b: 40000, c: 500000 }, 100000, 5, { a: 2000, b: 300000 }).key, 'a', 'a 2 s poll four seconds late beats a 5 min poll a minute late');
+	assert.equal(Merc.nextDue(s, { a: 96000, b: 40000, c: 500000 }, 100000, 5).key, 'b', 'without periods the most overdue wins');
 });
 
 test('budget slides over one minute', () => {
@@ -224,11 +296,12 @@ test('chainAlert fires once per drop and re-arms when the timer refills', () => 
 });
 
 test('game links only ever carry a number', () => {
-	assert.equal(Merc.attackUrl(123), 'https://www.torn.com/loader.php?sid=attack&user2ID=123');
+	assert.equal(Merc.attackUrl(123), 'https://www.torn.com/page.php?sid=attack&user2ID=123');
 	assert.ok(Merc.attackUrl('1&x=2').endsWith('user2ID=NaN'));
 });
 
 test('attackPageTarget reads the attack page and nothing else', () => {
+	assert.equal(Merc.attackPageTarget('/page.php', '?sid=attack&user2ID=555'), 555);
 	assert.equal(Merc.attackPageTarget('/loader.php', '?sid=attack&user2ID=555'), 555);
 	assert.equal(Merc.attackPageTarget('/loader.php', '?sid=crimes'), 0);
 	assert.equal(Merc.attackPageTarget('/profiles.php', '?XID=555'), 0);
@@ -250,6 +323,8 @@ test('barText tells the merc whether this target still meets the terms', () => {
 	assert.equal(Merc.barText(bars, null, NOW), 'E 150/150 · Life 40/100 LOW · Not on your radar');
 	assert.equal(Merc.barText(null, { name: 'Bob', state: 'hit' }, NOW), 'Bob: terms met');
 	assert.equal(Merc.barText(null, { name: 'Bob', state: 'hit', ff: 2.5 }, NOW), 'Bob: terms met · FF 2.50');
+	assert.equal(Merc.barText(null, { name: 'Bob', state: 'hit', bounty: { perHit: 250000, more: 100000 } }, NOW), 'Bob: HOSPITALIZE to claim $250k (+$100k on later hits)');
+	assert.equal(Merc.barText(null, { name: 'Bob', state: 'hit', bounty: { perHit: 250000, more: 0 } }, NOW), 'Bob: HOSPITALIZE to claim $250k');
 	assert.equal(Merc.barText(null, { name: 'Bob', state: 'soon', why: 'hospital', until: NOW + 65 }, NOW), 'Bob: DO NOT HIT (hospital 1:05)');
 	assert.equal(Merc.barText(null, { name: 'Bob', state: 'no', why: 'has early discharge', until: 0 }, NOW), 'Bob: DO NOT HIT (has early discharge)');
 });

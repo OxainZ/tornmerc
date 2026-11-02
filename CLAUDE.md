@@ -9,6 +9,10 @@ tornmerc is Oxain's standalone, free Torn City merc radar: one Tampermonkey user
   paid to hit, the attack-page contract check, the hit log, Fair Fight on every row and an opt-in
   pool via FFScouter, the merc's own chain timer from `/user/bars`. No own-faction members; a test
   rejects `faction/chain`.
+- **One hospitalisation claims one bounty, the highest on the target.** Torn pays the rest of a
+  stacked pile on later hits, after the target leaves hospital again, and a quantity-N bounty is N
+  claims. Rank and alert on `bounty.perHit`, never on the stacked total; bounties expire
+  (`valid_until`). The attack page is `page.php?sid=attack` (Torn retired `loader.php`).
 - **Lowest level is not weakest.** The FF gate (`Merc.ffGate`) exists because a stacked low level
   will cook the merc; never rank or alert on level alone when FF is available.
 - **API only.** Never request torn.com pages. `@connect` is `api.torn.com` plus `ffscouter.com`

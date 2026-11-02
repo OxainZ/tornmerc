@@ -23,17 +23,24 @@ alerts only: you click Attack, Start Fight and every hit yourself.
   Add a note such as the contract link or who pays.
 - **No early discharge:** tick it and the radar skips targets Torn reports as eligible for early
   discharge. It reads the target's faction list for that, so factionless players are not checked.
-- **Bounty board:** reads the whole board (300 bounties), stacks every bounty on a target, drops
-  anyone above your FF limit, and lists the rest in hit order: out now (most cash first), then
-  whoever is out soonest, bigger bounty first within the same minute. The top 25 are watched live
-  and the alert says "$250k bounty: X is OUT". Tick a row once you collect and it hides for 24 h.
+- **Bounty board:** reads the whole board (every page, up to 1,000 bounties), stacks every bounty on
+  a target and drops anyone above your FF limit, expired bounties, your own faction mates and
+  bounties you listed. One hospitalisation pays **one** bounty, the highest on the target, so every
+  row shows $ per hit, with the rest of the pile as "+$" for follow-up hits once they leave hospital
+  again. Hit order: out now (most $ per hit first, with how long they have been out), then whoever
+  is out soonest, bigger bounty first within the same minute. The top 60 are watched live; 30 s
+  before a release you get "$250k bounty: X out in 0:30" so you are already sitting on the attack
+  page, then "X is OUT" when the timer ends. "Hunted" marks a target whose last hospital stay was
+  another player's hit: expect a race. Tick ✓ once you collect: the target hides until the board
+  changes for them (a claim or a new bounty), or 24 h at most.
 - **Paid hits on a faction:** every member under one rule, for turtling or hitting offliners.
   Hittable members are listed lowest level first.
 - **Traders:** the "Online or idle" rule alerts when a trader lands or leaves hospital and is around.
 - **Hunting abroad:** a target in another country only counts when you are in that country too, so
   in Japan the list is everyone you can hit in Japan.
 - **Attack-page bar:** on the attack screen, a bar shows your energy and life and whether *this*
-  target still meets its terms, so you never make an illegal hit.
+  target still meets its terms, so you never make an illegal hit. For a bounty target it reads
+  "HOSPITALIZE to claim $X": leaving or mugging pays nothing.
 - **Hit log:** each time a target clears its terms, one line is kept to paste as proof: who, when
   (TCT), their status, activity and early-discharge state, and the terms.
 - **Fair Fight (optional):** with an FFScouter key, every target shows its Fair Fight against *you*,
@@ -53,8 +60,10 @@ the radar runs.
   stats call per 10 minutes and one pool call per 5). Never torn.com pages.
 - At most 75 Torn requests a minute, leaving room under Torn's limit of 100.
 - One tab polls; a new tab takes over within 5 seconds of the old one closing.
-- Polling is every 60 s by default, 30 s for players who are out, 15 s within 5 minutes of leaving
-  hospital and 2 s in the last minute, limited by the budget. Many targets poll slower.
+- Polling: 30 s for players who are out, every 5 min for a long hospital stay (a revive can end it
+  early), 60 s inside the last half hour, 15 s inside the last 5 minutes and 2 s in the last minute.
+  The release-second polls are never starved by a long list: the poll most overdue for its own
+  pace goes first. The board itself is read once a minute.
 - It only polls while a torn.com tab is open and the radar is on.
 
 ## What it will not do

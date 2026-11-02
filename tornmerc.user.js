@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn Merc Radar
-// @version      0.6.0
+// @version      0.7.0
 // @description  Free merc radar: watches your contracts, Torn's bounty board and paid-hit factions through the Torn API and alerts you the moment a target can be hit. Fair Fight on every target (FFScouter), chain kit, attack-page contract check, hit log. Alerts only; every attack stays manual.
 // @author       Oxain
 // @match        https://www.torn.com/*
@@ -22,17 +22,19 @@
 	/* ---------- pure core (exported for Node, no DOM) ---------- */
 
 	const Merc = {};
-	Merc.VERSION = '0.6.0';
+	Merc.VERSION = '0.7.0';
 	Merc.API = 'https://api.torn.com/v2';
 	Merc.FF_API = 'https://ffscouter.com/api/v1';
 	Merc.COMMENT = 'TornMerc';
 	Merc.BUDGET_PER_MIN = 75;       // Torn allows 100 a minute across all of a player's keys; leave room for other scripts
 	Merc.TICK_MS = 1000;
 	Merc.MAX_ROWS = 60;
-	Merc.MAX_BOUNTY_WATCH = 25;     // best-scoring bounty targets polled individually
-	Merc.BOUNTY_PAGES = 3;          // /torn/bounties pages 100 at a time; 300 covers the live board
+	Merc.MAX_BOUNTY_WATCH = 60;     // best-paying bounty targets polled individually; deep-hospital ones cost one call per 5 min
+	Merc.BOUNTY_PAGE = 100;         // /torn/bounties serves 100 a page; _metadata.total says how many pages the board needs
+	Merc.BOUNTY_MAX_PAGES = 10;
 	Merc.ENERGY_PER_HIT = 25;
-	Merc.BOUNTY_BLACKLIST_H = 24;   // a bounty target you cleared stays hidden this long
+	Merc.BOUNTY_BLACKLIST_H = 24;   // a bounty you ticked as collected stays hidden this long, or until the board changes for that target
+	Merc.SOON_WARN_SEC = 30;        // "get on the attack page": a bounty target leaves hospital this soon
 	Merc.POOL_REFRESH_SEC = 300;    // FFScouter get-targets allows 25 calls a minute per IP; we use one every 5 minutes
 	Merc.STATS_REFRESH_SEC = 600;   // FFScouter get-stats: one call per 10 minutes covers every row (205 ids a call)
 	Merc.STATS_BATCH = 205;
@@ -88,9 +90,10 @@
 	 * player: {status, last_action, has_early_discharge}; watch: {rule, noED, factionId}; myCountry: where I am.
 	 * Returns {state: 'hit'|'soon'|'no', why, until}.
 	 */
-	Merc.evaluate = function (player, watch, myCountry, nowSec) {
+	Merc.evaluate = function (player, watch, myCountry, nowSec, myFaction) {
 		const st = (player && player.status) || {};
 		const until = Number(st.until) || 0;
+		if (myFaction && player && Number(player.faction_id) === myFaction) return { state: 'no', why: 'own faction', until };   // Torn does not let you attack faction mates
 		if (st.state === 'Hospital' || st.state === 'Jail') return { state: 'soon', why: st.state.toLowerCase(), until };
 		if (st.state === 'Traveling') return { state: 'no', why: 'flying', until };
 		const there = Merc.countryOf(st);
@@ -143,10 +146,14 @@
 	};
 
 	/**
-	 * Bounties worth watching. One entry per target, every bounty on them stacked into `total`.
-	 * Filters: not me, not listed by me, level cap, reward floor, FF cap (when known), blacklist.
-	 * Each becomes a watch {id, rule:'any', bounty:{reward, quantity, total, lister, count}}.
-	 * opts: {myId, maxLevel, minReward, maxFf, stats: Map id->{ff}, skip: Set of ids, max}
+	 * Bounties worth watching. One entry per target, every live bounty on them stacked.
+	 * One hospitalisation claims ONE bounty, the highest on the target (Torn pays the rest on later hits,
+	 * after they leave hospital again), so the money that matters is `perHit`; `total` is the whole pile
+	 * and `more` what is left for follow-up hits. A quantity-N bounty is N claims of `reward`.
+	 * Filters: not me, not listed by me, expired, level cap, reward floor (per hit), FF cap (when known),
+	 * the collected list (hidden while the board still shows the same pile).
+	 * Each becomes a watch {id, rule:'any', bounty:{perHit, total, more, hits, count, lister, expires, sig}}.
+	 * opts: {myId, maxLevel, minReward, maxFf, stats: Map id->{ff}, skip: Map id->{at, sig}, max, now}
 	 */
 	Merc.bountyWatches = function (bounties, opts) {
 		const o = opts || {};
@@ -154,26 +161,39 @@
 		for (const b of bounties || []) {
 			const id = Number(b.target_id);
 			if (!id || id === o.myId || Number(b.lister_id) === o.myId) continue;
-			if (o.skip && o.skip.has(id)) continue;
+			if (o.now && Number(b.valid_until) && Number(b.valid_until) < o.now) continue;   // a page from the cache can still list an expired bounty
 			if (o.maxLevel && Number(b.target_level) > o.maxLevel) continue;
 			const reward = Number(b.reward) || 0;
 			const qty = Math.max(1, Number(b.quantity) || 1);
 			const st = o.stats && o.stats.get(id);
 			if (o.maxFf && st && st.ff > o.maxFf) continue;
-			const cur = best.get(id) || { id, rule: 'any', noED: false, level: Number(b.target_level) || 0, name: b.target_name, bounty: { reward: 0, quantity: 0, total: 0, lister: b.lister_name || 'anonymous', count: 0, expires: 0 } };
+			const cur = best.get(id) || { id, rule: 'any', noED: false, level: Number(b.target_level) || 0, name: b.target_name, bounty: { perHit: 0, total: 0, more: 0, hits: 0, count: 0, lister: '', expires: 0, sig: '' } };
 			cur.bounty.total += reward * qty;
-			cur.bounty.quantity += qty;
+			cur.bounty.hits += qty;
 			cur.bounty.count += 1;
-			cur.bounty.reward = Math.max(cur.bounty.reward, reward);
+			if (reward > cur.bounty.perHit) { cur.bounty.perHit = reward; cur.bounty.lister = b.lister_name || 'anonymous'; }
 			cur.bounty.expires = Math.max(cur.bounty.expires, Number(b.valid_until) || 0);
 			best.set(id, cur);
 		}
-		const out = [...best.values()].filter((w) => !o.minReward || w.bounty.total >= o.minReward);
-		return out.sort((a, b) => b.bounty.total - a.bounty.total || a.level - b.level).slice(0, o.max || Merc.MAX_BOUNTY_WATCH);
+		const out = [];
+		for (const w of best.values()) {
+			w.bounty.more = w.bounty.total - w.bounty.perHit;
+			w.bounty.sig = `${w.bounty.perHit}:${w.bounty.hits}`;
+			if (o.minReward && w.bounty.perHit < o.minReward) continue;
+			const skipped = o.skip && o.skip.get(w.id);
+			if (skipped && skipped.sig === w.bounty.sig) continue;   // still the pile you collected from; a new or claimed bounty changes it and brings the target back
+			out.push(w);
+		}
+		return out.sort((a, b) => b.bounty.perHit - a.bounty.perHit || b.bounty.total - a.bounty.total || a.level - b.level).slice(0, o.max || Merc.MAX_BOUNTY_WATCH);
+	};
+
+	/** How many board pages to read: _metadata.total over 100 a page, at least one, capped. */
+	Merc.boardPages = function (total) {
+		return Math.min(Merc.BOUNTY_MAX_PAGES, Math.max(1, Math.ceil((Number(total) || 0) / Merc.BOUNTY_PAGE)));
 	};
 
 	/**
-	 * Bounty order: OUT NOW first (most cash first), then whoever is out soonest.
+	 * Bounty order: OUT NOW first (most cash per hit first), then whoever is out soonest.
 	 * Inside the same minute of release, more cash wins; so two targets out at 9:40 and 10:10 are a coin
 	 * flip on the clock and the bigger bounty is listed first. Above my FF limit = not listed at all.
 	 * Returns {bucket, cash}: bucket 0 = out now, else the minute of release; sort ascending bucket, descending cash.
@@ -181,9 +201,26 @@
 	Merc.bountyKey = function (row, nowSec) {
 		const b = row.bounty;
 		if (!b || row.state === 'no') return null;
-		if (row.state === 'hit') return { bucket: 0, cash: b.total };
+		if (row.state === 'hit') return { bucket: 0, cash: b.perHit };
 		const waitMin = Math.max(0, (row.until || 0) - nowSec) / 60;
-		return { bucket: 1 + Math.floor(waitMin), cash: b.total };
+		return { bucket: 1 + Math.floor(waitMin), cash: b.perHit };
+	};
+
+	/** Who put them in hospital last, from the status details ("Hospitalized by Bob"), or '' (overdose, self-hosp, unknown). */
+	Merc.hospitalizedBy = function (status) {
+		const m = /^Hospitali[sz]ed by (.+?)\.?$/i.exec(String((status && status.details) || '').replace(/<[^>]*>/g, '').trim());
+		return m ? m[1] : '';
+	};
+
+	/** Keeps the second a target was first seen out (Okay or Abroad); forgets it once they are not. */
+	Merc.trackOut = function (outSince, id, status, nowSec) {
+		if (Merc.countryOf(status)) { if (!outSince.has(id)) outSince.set(id, nowSec); } else outSince.delete(id);
+		return outSince;
+	};
+
+	/** Hits my energy pays for. */
+	Merc.hitsAffordable = function (bars) {
+		return bars && bars.energy ? Math.floor((Number(bars.energy.current) || 0) / Merc.ENERGY_PER_HIT) : null;
 	};
 
 	Merc.money = function (n) {
@@ -200,10 +237,10 @@
 			.sort((a, b) => a.order.bucket - b.order.bucket || b.order.cash - a.order.cash || a.level - b.level);
 	};
 
-	/** Blacklist: ids cleared within the window, so a bounty you already collected is not re-listed. */
+	/** Collected list: id -> {at, sig} ticked within the window, so a bounty you already collected is not re-listed. */
 	Merc.pruneSkip = function (skip, nowSec) {
 		const out = new Map();
-		for (const [id, at] of skip || []) if (nowSec - at < Merc.BOUNTY_BLACKLIST_H * 3600) out.set(id, at);
+		for (const [id, v] of skip || []) if (v && typeof v === 'object' && nowSec - v.at < Merc.BOUNTY_BLACKLIST_H * 3600) out.set(id, v);
 		return out;
 	};
 
@@ -219,28 +256,57 @@
 		return [...map.values()];
 	};
 
-	/** Seconds between polls: close to release = fast, everyone else = slow. */
+	/**
+	 * Seconds between polls: the last minute of a hospital stay is polled every 2 s, the last five every 15 s,
+	 * the last half hour every minute, and a long stay every 5 min (a revive can let them out early).
+	 * Out targets every 30 s, a flight every 2 min. The budget goes where the money is about to be.
+	 */
 	Merc.pollSeconds = function (players, nowSec) {
-		let best = 60;
+		let best = 600;
 		for (const p of players || []) {
 			const st = (p && p.status) || {};
 			const left = (Number(st.until) || 0) - nowSec;
-			if (st.state === 'Hospital' && left <= 60) best = Math.min(best, 2);
-			else if (st.state === 'Hospital' && left <= 300) best = Math.min(best, 15);
-			else if (st.state === 'Traveling' || st.state === 'Okay' || st.state === 'Abroad') best = Math.min(best, 30);
+			let s = 60;
+			if (st.state === 'Hospital' || st.state === 'Jail') s = left <= 60 ? 2 : left <= 300 ? 15 : left <= 1800 ? 60 : 300;
+			else if (st.state === 'Okay' || st.state === 'Abroad') s = 30;
+			else if (st.state === 'Traveling') s = 120;
+			best = Math.min(best, s);
 		}
-		return best;
+		return players && players.length ? best : 60;
 	};
 
-	/** The most overdue source, or null if nothing is due or the budget is spent. */
-	Merc.nextDue = function (sources, dueAt, nowMs, remaining) {
+	/**
+	 * The source that is most overdue relative to its own period, or null if nothing is due or the budget is
+	 * spent. A 2-second poll four seconds late beats a 5-minute poll a minute late, so the release-second
+	 * polls are never starved by a long watch list. period: key -> ms between polls (60 s when unknown).
+	 */
+	Merc.nextDue = function (sources, dueAt, nowMs, remaining, period) {
 		if (remaining <= 0) return null;
 		let pick = null;
+		let late = -1;
 		for (const s of sources) {
 			const due = dueAt[s.key] || 0;
-			if (due <= nowMs && (!pick || due < (dueAt[pick.key] || 0))) pick = s;
+			if (due > nowMs) continue;
+			const ratio = (nowMs - due) / ((period && period[s.key]) || 60000);
+			if (ratio > late) { late = ratio; pick = s; }
 		}
 		return pick;
+	};
+
+	/**
+	 * Rows about to leave hospital: a bounty target inside `leadSec` of release that has not been warned yet.
+	 * Returns {alerts, warned}; keep `warned` for the next call so each release warns once.
+	 */
+	Merc.newlySoon = function (rows, warned, nowSec, leadSec) {
+		const next = new Set();
+		const alerts = [];
+		for (const r of rows) {
+			const left = (r.until || 0) - nowSec;
+			if (r.state !== 'soon' || !r.bounty || left <= 0 || left > leadSec) continue;
+			next.add(r.key);
+			if (!warned.has(r.key)) alerts.push(r);
+		}
+		return { alerts, warned: next };
 	};
 
 	/** Sliding one-minute request budget. */
@@ -296,12 +362,12 @@
 	};
 
 	/** The only game URLs this script produces, as plain links for you to click. Opening one attacks nobody. */
-	Merc.attackUrl = function (id) { return `https://www.torn.com/loader.php?sid=attack&user2ID=${Number(id)}`; };
+	Merc.attackUrl = function (id) { return `https://www.torn.com/page.php?sid=attack&user2ID=${Number(id)}`; };   // loader.php?sid=attack was retired by Torn (it now answers 'endpoint no longer available')
 	Merc.profileUrl = function (id) { return `https://www.torn.com/profiles.php?XID=${Number(id)}`; };
 
 	/** The target id of an attack page, from its path + query, or 0 elsewhere. */
 	Merc.attackPageTarget = function (pathname, search) {
-		if (!/\/loader\.php$/.test(pathname || '')) return 0;
+		if (!/\/(?:page|loader)\.php$/.test(pathname || '')) return 0;   // page.php is Torn's attack page now; loader.php links still exist in old sidebars
 		const q = new URLSearchParams(search || '');
 		return q.get('sid') === 'attack' ? Number(q.get('user2ID')) || 0 : 0;
 	};
@@ -339,6 +405,7 @@
 			parts.push(`Life ${bars.life.current}/${bars.life.maximum}${bars.life.current < bars.life.maximum / 2 ? ' LOW' : ''}`);
 		}
 		if (!row) parts.push('Not on your radar');
+		else if (row.state === 'hit' && row.bounty) parts.push(`${row.name}: HOSPITALIZE to claim ${Merc.money(row.bounty.perHit)}${row.bounty.more ? ` (+${Merc.money(row.bounty.more)} on later hits)` : ''}${row.ff ? ` · FF ${row.ff.toFixed(2)}` : ''}`);
 		else if (row.state === 'hit') parts.push(`${row.name}: terms met${row.ff ? ` · FF ${row.ff.toFixed(2)}` : ''}`);
 		else parts.push(`${row.name}: DO NOT HIT (${row.why}${row.state === 'soon' && row.until > nowSec ? ` ${Merc.clock(row.until - nowSec)}` : ''})`);
 		return parts.join(' · ');
@@ -408,7 +475,8 @@
 	let factions = load('factions', []);
 	let bountyWatches = [];
 	let bountyRaw = [];           // all pages of the board, merged
-	let bountySkip = new Map(load('bountySkip', []));
+	let bountyTotal = 0;          // how many bounties the board holds (_metadata.total), so every page is read
+	let bountySkip = new Map(load('bountySkip', []));   // id -> {at, sig}: ticked as collected
 	let poolRows = [];
 	let hitLog = load('log', []);
 
@@ -448,7 +516,7 @@
 		el('details', {}, el('summary', { textContent: 'Bounty board' }),
 			el('label', {}, bountyOn, ' Hunt Torn\'s bounty board'),
 			el('div', { className: 'tm-two' }, field('Max target level', bountyMaxLevel), field('Min total reward ($)', bountyMinReward)),
-			el('div', { className: 'tm-note', textContent: `Reads the whole board (up to ${Merc.BOUNTY_PAGES * 100} bounties), stacks every bounty on a target, drops anyone above your FF limit, and ranks the rest by $ you can actually collect: hittable now beats a countdown, easy FF beats a close one. The top ${Merc.MAX_BOUNTY_WATCH} are watched live. Targets you clear are hidden for ${Merc.BOUNTY_BLACKLIST_H} h. Bounties you listed are skipped.` })),
+			el('div', { className: 'tm-note', textContent: `Reads the whole board (up to ${Merc.BOUNTY_MAX_PAGES * Merc.BOUNTY_PAGE} bounties), stacks every bounty on a target and drops anyone above your FF limit, expired bounties, your own faction and bounties you listed. One hospitalisation pays ONE bounty, the highest on the target, so rows show $ per hit, with the rest of the pile as "+$" for later hits. Order: out now (most $ per hit first), then whoever is out soonest. The top ${Merc.MAX_BOUNTY_WATCH} are watched live and you get a heads-up ${Merc.SOON_WARN_SEC} s before a release. Tick ✓ once you collect: the target hides until the board changes for them, or ${Merc.BOUNTY_BLACKLIST_H} h.` })),
 		el('details', {}, el('summary', { textContent: 'Fair Fight (FFScouter)' }),
 			field('FFScouter key', ffKeyIn),
 			field('Max FF for me (blank = off)', maxFfIn),
@@ -504,9 +572,13 @@
 	const live = new Map();       // player id -> latest player object
 	const members = new Map();    // faction id -> member ids
 	const dueAt = {};
+	const period = {};            // source key -> ms between polls, so nextDue can tell "late" from "slow"
+	const outSince = new Map();   // player id -> second first seen out of hospital
 	let prevHits = new Set();
+	let soonWarned = new Set();
 	let myStatus = null;
 	let myId = 0;
+	let myFaction = 0;
 	let myBars = null;
 	let barsOk = true;            // false once /user/bars says the key is Public
 	let poolAt = 0;
@@ -525,9 +597,10 @@
 
 	function allWatches() { return bountyOn.checked ? watches.concat(bountyWatches) : watches; }
 	function rebuildBounties() {
-		bountySkip = Merc.pruneSkip(bountySkip, Math.floor(Date.now() / 1000));
+		const nowSec = Math.floor(Date.now() / 1000);
+		bountySkip = Merc.pruneSkip(bountySkip, nowSec);
 		const maxFf = ffKeyIn.value.trim() ? Number(maxFfIn.value) || 0 : 0;
-		bountyWatches = Merc.bountyWatches(bountyRaw.flat(), { myId, maxLevel: Number(bountyMaxLevel.value) || 0, minReward: Number(bountyMinReward.value) || 0, maxFf, stats, skip: new Set(bountySkip.keys()) });
+		bountyWatches = Merc.bountyWatches(bountyRaw.flat(), { myId, maxLevel: Number(bountyMaxLevel.value) || 0, minReward: Number(bountyMinReward.value) || 0, maxFf, stats, skip: bountySkip, now: nowSec });
 	}
 
 	function buildRows(nowSec) {
@@ -536,12 +609,12 @@
 		const maxFf = ffKeyIn.value.trim() ? Number(maxFfIn.value) || 0 : 0;
 		const row = (key, id, p, watch, label) => {
 			const st = stats.get(id) || { ff: 0, bs: '' };
-			const r = Merc.ffGate(Merc.evaluate(p, watch, country, nowSec), st.ff, maxFf);
-			rows.push({ key, id, name: p.name || String(id), level: Number(p.level) || 0, label, watch: watch, player: p, ff: st.ff, bs: st.bs, bounty: watch.bounty, ...r });
+			const r = Merc.ffGate(Merc.evaluate(p, watch, country, nowSec, myFaction), st.ff, maxFf);
+			rows.push({ key, id, name: p.name || String(id), level: Number(p.level) || 0, label, watch: watch, player: p, ff: st.ff, bs: st.bs, bounty: watch.bounty, hunter: Merc.hospitalizedBy(p.status), outFor: outSince.has(id) ? nowSec - outSince.get(id) : 0, ...r });
 		};
 		for (const w of allWatches()) {
 			const p = live.get(w.id);
-			if (p) row(`p${w.id}`, w.id, p, w, w.bounty ? `bounty ${Merc.money(w.bounty.total)}${w.bounty.count > 1 ? ` (${w.bounty.count} stacked)` : ''} by ${w.bounty.lister}` : w.note || 'contract');
+			if (p) row(`p${w.id}`, w.id, p, w, w.bounty ? `${Merc.money(w.bounty.perHit)} per hit by ${w.bounty.lister}${w.bounty.count > 1 ? ` · ${w.bounty.count} bounties, ${Merc.money(w.bounty.total)} in all` : w.bounty.hits > 1 ? ` · x${w.bounty.hits}` : ''}` : w.note || 'contract');
 		}
 		for (const f of factions) {
 			for (const id of members.get(f.id) || []) {
@@ -559,15 +632,17 @@
 		const shown = bountyRows.concat(rest, poolOn.checked ? poolRows : []);
 		let group = '';
 		for (const r of shown.slice(0, Merc.MAX_ROWS)) {
-			const g = r.bounty ? `Bounties (${bountyRows.length} of ${bountyRaw.flat().length} on the board, under FF ${Number(maxFfIn.value) || 'off'})` : r.key.startsWith('pool') ? 'Chain pool' : 'Contracts';
+			const g = r.bounty ? `Bounties (${bountyRows.length} of ${bountyRaw.flat().length} on the board, under FF ${Number(maxFfIn.value) || 'off'}) · $ per hit` : r.key.startsWith('pool') ? 'Chain pool' : 'Contracts';
 			if (g !== group) { group = g; body.append(el('tr', {}, el('td', { colSpan: 4, className: 'tm-group', textContent: g }))); }
 			const left = r.until - nowSec;
 			const what = r.state === 'soon' && left > 0 ? `${r.why} ${Merc.clock(left)}` : r.why;
+			const when = r.state === 'hit' ? `OUT NOW${r.outFor >= 60 ? ` ${Math.floor(r.outFor / 60)}m` : ''}` : r.state === 'soon' && left > 0 ? `out in ${Merc.clock(left)}` : r.why;
+			const exp = r.bounty && r.bounty.expires > nowSec ? ` · exp ${Merc.clock(r.bounty.expires - nowSec)}` : '';
 			body.append(el('tr', { className: `tm-state-${r.state}${/^DANGER/.test(r.why) ? ' tm-danger' : ''}` },
-				el('td', {}, el('a', { href: Merc.profileUrl(r.id), textContent: r.name, title: `${r.label}${r.bs ? ` · est. ${r.bs}` : ''}` })),
+				el('td', {}, el('a', { href: Merc.profileUrl(r.id), textContent: r.name, title: `${r.label}${r.bs ? ` · est. ${r.bs}` : ''}${r.hunter ? ` · last hospitalized by ${r.hunter}: expect a race` : ''}${exp}` })),
 				el('td', { textContent: r.ff ? `${r.level} · FF ${r.ff.toFixed(2)}` : String(r.level) }),
-				el('td', { textContent: r.bounty ? `${Merc.money(r.bounty.total)} · ${r.state === 'hit' ? 'OUT NOW' : r.state === 'soon' && left > 0 ? `out in ${Merc.clock(left)}` : r.why}` : what }),
-				el('td', {}, el('a', { className: 'tm-hit', href: Merc.attackUrl(r.id), textContent: 'Attack' }), r.bounty ? el('button', { className: 'tm-x', textContent: '✓', title: 'Collected: hide for 24 h', onclick: () => { bountySkip.set(r.id, Math.floor(Date.now() / 1000)); save('bountySkip', [...bountySkip]); rebuildBounties(); } }) : '')));
+				el('td', { textContent: r.bounty ? `${Merc.money(r.bounty.perHit)}${r.bounty.more ? ` +${Merc.money(r.bounty.more)}` : ''} · ${when}${r.hunter ? ' · hunted' : ''}` : what }),
+				el('td', {}, el('a', { className: 'tm-hit', href: Merc.attackUrl(r.id), textContent: 'Attack' }), r.bounty ? el('button', { className: 'tm-x', textContent: '✓', title: 'Collected: hide until the board changes for them (24 h at most)', onclick: () => { bountySkip.set(r.id, { at: Math.floor(Date.now() / 1000), sig: r.bounty.sig }); save('bountySkip', [...bountySkip]); rebuildBounties(); } }) : '')));
 		}
 		if (body.childElementCount) listEl.append(el('table', {}, body));
 		else listEl.append(el('div', { className: 'tm-note', textContent: running ? 'Nobody to show yet.' : 'Add contracts, then start the radar.' }));
@@ -588,7 +663,7 @@
 	}
 
 	function absorb(src, json) {
-		if (src.key === 'me') { myStatus = json.profile.status; myId = Number(json.profile.id); return [json.profile]; }
+		if (src.key === 'me') { myStatus = json.profile.status; myId = Number(json.profile.id); myFaction = Number(json.profile.faction_id) || 0; return [json.profile]; }
 		if (src.key === 'bars') {
 			myBars = json.bars;
 			if (chainOn.checked) {
@@ -601,6 +676,11 @@
 		if (src.key.startsWith('bounties')) {
 			const page = Number(src.key.slice(8)) || 0;
 			bountyRaw[page] = json.bounties || [];
+			const meta = json._metadata || {};
+			if (meta.total !== undefined && meta.total !== null) bountyTotal = Number(meta.total) || 0;
+			else if (meta.links && meta.links.next) bountyTotal = Math.max(bountyTotal, (page + 2) * Merc.BOUNTY_PAGE);   // no total: there is at least one more page
+			else bountyTotal = Math.min(bountyTotal || Infinity, (page + 1) * Merc.BOUNTY_PAGE);
+			bountyRaw.length = Math.min(bountyRaw.length, Merc.boardPages(bountyTotal));
 			rebuildBounties();
 			return [];
 		}
@@ -614,6 +694,7 @@
 		}
 		const p = json.profile;
 		live.set(p.id, p);
+		Merc.trackOut(outSince, p.id, p.status, Math.floor(Date.now() / 1000));
 		const w = watches.find((x) => x.id === p.id);
 		if (w && w.noED && p.faction_id && w.factionId !== p.faction_id) { w.factionId = p.faction_id; save('watches', watches); }
 		return [p];
@@ -647,11 +728,11 @@
 		const now = Date.now();
 		try {
 			if (!holdLock(now)) { say('Radar is running in another Torn tab.'); return; }
-			const sources = [{ key: 'me', path: '/user/basic' }];
+			const sources = [{ key: 'me', path: '/user/profile' }];   // profile, not basic: it carries my faction id, so faction mates are never listed
 			if (barsOk) sources.push({ key: 'bars', path: '/user/bars' });
-			if (bountyOn.checked) for (let i = 0; i < Merc.BOUNTY_PAGES; i++) sources.push({ key: `bounties${i}`, path: `/torn/bounties?limit=100&offset=${i * 100}` });
+			if (bountyOn.checked) for (let i = 0; i < Merc.boardPages(bountyTotal); i++) sources.push({ key: `bounties${i}`, path: `/torn/bounties?limit=${Merc.BOUNTY_PAGE}&offset=${i * Merc.BOUNTY_PAGE}` });
 			sources.push(...Merc.sources(allWatches(), factions));
-			const src = Merc.nextDue(sources, dueAt, now, budget.remaining(now));
+			const src = Merc.nextDue(sources, dueAt, now, budget.remaining(now), period);
 			if (src) {
 				budget.hit(now);
 				dueAt[src.key] = now + 60000;
@@ -663,6 +744,7 @@
 				else {
 					const seen = absorb(src, json);
 					const fixed = src.key === 'me' ? 60 : src.key === 'bars' ? (chainOn.checked ? 15 : 30) : src.key.startsWith('bounties') ? 60 : Merc.pollSeconds(seen, Math.floor(now / 1000));
+					period[src.key] = fixed * 1000;
 					dueAt[src.key] = now + fixed * 1000;
 				}
 			}
@@ -672,17 +754,21 @@
 			const nowSec = Math.floor(Date.now() / 1000);
 			const rows = buildRows(nowSec);
 			for (const r of Merc.newlyHit(rows, prevHits)) {
-				alertMe(r.bounty ? `${Merc.money(r.bounty.total)} bounty: ${r.name} is OUT` : `${r.name} can be hit`, `Level ${r.level}${r.ff ? ` · FF ${r.ff.toFixed(2)}` : ''} · ${r.label} · click to open the attack page`, Merc.attackUrl(r.id));
+				alertMe(r.bounty ? `${Merc.money(r.bounty.perHit)} bounty: ${r.name} is OUT` : `${r.name} can be hit`, `Level ${r.level}${r.ff ? ` · FF ${r.ff.toFixed(2)}` : ''} · ${r.label}${r.bounty ? ' · hospitalize to claim' : ''} · click to open the attack page`, Merc.attackUrl(r.id));
 				hitLog = hitLog.concat(Merc.logEntry(r, r.player, r.watch, nowSec)).slice(-Merc.LOG_MAX);
 				save('log', hitLog);
 				renderLog();
 			}
 			prevHits = new Set(rows.filter((r) => r.state === 'hit').map((r) => r.key));
+			const soon = Merc.newlySoon(rows, soonWarned, nowSec, Merc.SOON_WARN_SEC);   // the race is won by whoever is already on the attack page
+			soonWarned = soon.warned;
+			for (const r of soon.alerts) alertMe(`${Merc.money(r.bounty.perHit)} bounty: ${r.name} out in ${Merc.clock(r.until - nowSec)}`, `Level ${r.level}${r.ff ? ` · FF ${r.ff.toFixed(2)}` : ''}${r.hunter ? ` · last taken by ${r.hunter}` : ''} · click to sit on the attack page`, Merc.attackUrl(r.id));
 			render(rows, nowSec);
 			updateBar(rows, nowSec);
 			const n = watches.length + factions.length;
-			const nb = bountyOn.checked ? ` · ${bountyWatches.length} bounties (${bountyRaw.flat().length} on board)` : '';
-			say(`Watching ${n} contract${n === 1 ? '' : 's'}${nb}${ffKeyIn.value.trim() ? ` · FF max ${Number(maxFfIn.value) || 'off'}` : ''}${poolOn.checked ? ` · pool ${poolRows.length}` : ''} · ${Merc.BUDGET_PER_MIN - budget.remaining(Date.now())}/${Merc.BUDGET_PER_MIN} calls a minute${problem ? ` · ${problem}` : ''}`);
+			const nb = bountyOn.checked ? ` · ${bountyWatches.length} bounties (${bountyRaw.flat().length} of ${bountyTotal || '?'} on board)` : '';
+			const hits = Merc.hitsAffordable(myBars);
+			say(`Watching ${n} contract${n === 1 ? '' : 's'}${nb}${ffKeyIn.value.trim() ? ` · FF max ${Number(maxFfIn.value) || 'off'}` : ''}${poolOn.checked ? ` · pool ${poolRows.length}` : ''}${hits === null ? '' : ` · energy for ${hits} hit${hits === 1 ? '' : 's'}`} · ${Merc.BUDGET_PER_MIN - budget.remaining(Date.now())}/${Merc.BUDGET_PER_MIN} calls a minute${problem ? ` · ${problem}` : ''}`);
 		} catch (e) {
 			say(`Radar error: ${e.message}. Retrying.`);
 		} finally {
@@ -728,7 +814,7 @@
 	ffKeyIn.addEventListener('change', () => save('ffKey', ffKeyIn.value.trim()));
 	for (const [input, key] of [[bountyOn, 'bountyOn'], [poolOn, 'poolOn'], [chainOn, 'chainOn']]) input.addEventListener('change', () => { save(key, input.checked); poolAt = 0; });
 	maxFfIn.addEventListener('change', () => save('maxFf', maxFfIn.value));
-	for (const [input, key] of [[bountyMaxLevel, 'bountyMaxLevel'], [bountyMinReward, 'bountyMinReward'], [poolMaxFf, 'poolMaxFf'], [poolMaxLevel, 'poolMaxLevel']]) input.addEventListener('change', () => { save(key, input.value); poolAt = 0; for (let i = 0; i < Merc.BOUNTY_PAGES; i++) dueAt[`bounties${i}`] = 0; });
+	for (const [input, key] of [[bountyMaxLevel, 'bountyMaxLevel'], [bountyMinReward, 'bountyMinReward'], [poolMaxFf, 'poolMaxFf'], [poolMaxLevel, 'poolMaxLevel']]) input.addEventListener('change', () => { save(key, input.value); poolAt = 0; for (let i = 0; i < Merc.BOUNTY_MAX_PAGES; i++) dueAt[`bounties${i}`] = 0; });
 	clearLogBtn.addEventListener('click', () => { hitLog = []; save('log', hitLog); renderLog(); });
 	addBtn.addEventListener('click', () => {
 		const ids = Merc.parseIds(idsIn.value);
