@@ -36,7 +36,9 @@ alerts only: you click Attack, Start Fight and every hit yourself.
   page, then "X is OUT" when the timer ends. "Hunted" marks a target whose last hospital stay was
   another player's hit: expect a race. Tick ✓ once you collect: the target hides until the board
   changes for them (a claim or a new bounty), or 24 h at most.
-- **Paid hits on a faction:** every member under one rule, for turtling or hitting offliners.
+- **Paid hits on a faction:** every member under one rule, for a faction that pays you in a ranked
+  war to keep its enemy in hospital (re-hit each member as they walk out) or to hit offliners
+  (members who cannot fight back and score the same).
   Hittable members are listed lowest level first.
 - **Traders:** the "Online or idle" rule alerts when a trader lands or leaves hospital and is around.
 - **Hunting abroad:** a target in another country only counts when you are in that country too, so
