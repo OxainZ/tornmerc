@@ -1,0 +1,4 @@
+*.key
+.env
+secrets*
+node_modules/
